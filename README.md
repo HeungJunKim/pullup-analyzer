@@ -17,7 +17,7 @@ The visual overlay includes:
 ## Requirements
 
 - Python 3.10+
-- `ffmpeg` installed and available in `PATH`
+- `av` (PyAV)
 - A supported Ultralytics YOLO pose model
 
 ## Package Installation Guide
@@ -36,26 +36,13 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Or install the main dependency directly with `pip`:
+Or install the main dependencies directly with `pip`:
 
 ```bash
-pip install ultralytics
+pip install ultralytics av
 ```
 
-`ultralytics` installs the core dependencies used by this project, including `numpy` and OpenCV-related packages.
-
-If `ffmpeg` is missing, install it first.
-
-Examples:
-
-```bash
-# Ubuntu / Debian
-sudo apt-get update
-sudo apt-get install -y ffmpeg
-
-# macOS (Homebrew)
-brew install ffmpeg
-```
+`ultralytics` installs the core dependencies used by this project, including `numpy` and OpenCV-related packages. `av` is used to copy the original audio stream into the rendered output video without relying on an external `ffmpeg` executable.
 
 ## Folder Structure
 
@@ -127,5 +114,5 @@ python demo_pullup_visual.py
 
 - Only `.mp4` files in `videos/` are processed.
 - Result files are saved as `<original_name>_result.mp4`.
-- Original audio is merged back into the output when `ffmpeg` is available.
+- Original audio is merged back into the output with PyAV when the source video contains audio.
 - The repository does not track large local assets such as videos, results, or model weights.

@@ -1,12 +1,16 @@
 import os
 import logging
 import math
-import subprocess
 import sys
 import urllib.request
 
 import cv2
 import numpy as np
+
+try:
+    import av
+except ImportError:
+    av = None
 
 # Ultralytics가 import 시점에 settings.json을 초기화하므로
 # 서버별 홈 디렉터리 이슈를 피하려고 프로젝트 로컬 설정 경로를 먼저 고정한다.
@@ -83,23 +87,45 @@ def format_video_date(video_path):
 
 
 def merge_original_audio(video_only_path, source_video_path, output_video_path):
-    temp_output_path = f"{output_video_path}.mux.mp4"
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", video_only_path,
-        "-i", source_video_path,
-        "-map", "0:v:0",
-        "-map", "1:a:0?",
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-shortest",
-        temp_output_path,
-    ]
+    if av is None:
+        log("PyAV is not installed, keeping video-only output")
+        os.replace(video_only_path, output_video_path)
+        return False
 
-    result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if result.returncode != 0:
-        log(f"ffmpeg mux failed, keeping video-only output: {result.stderr.strip()}")
+    temp_output_path = f"{output_video_path}.mux.mp4"
+
+    try:
+        with av.open(video_only_path) as video_input, av.open(source_video_path) as source_input:
+            if not source_input.streams.audio:
+                log("no audio stream found in source video, keeping video-only output")
+                os.replace(video_only_path, output_video_path)
+                return False
+
+            input_video_stream = video_input.streams.video[0]
+            with av.open(temp_output_path, "w") as output:
+                output_video_stream = output.add_stream(template=input_video_stream)
+                audio_stream_pairs = [
+                    (audio_stream, output.add_stream(template=audio_stream))
+                    for audio_stream in source_input.streams.audio
+                ]
+
+                for packet in video_input.demux(input_video_stream):
+                    if packet.dts is None:
+                        continue
+                    packet.stream = output_video_stream
+                    output.mux(packet)
+
+                for input_audio_stream, output_audio_stream in audio_stream_pairs:
+                    for packet in source_input.demux(input_audio_stream):
+                        if packet.dts is None:
+                            continue
+                        packet.stream = output_audio_stream
+                        output.mux(packet)
+
+    except Exception as exc:
+        if os.path.exists(temp_output_path):
+            os.remove(temp_output_path)
+        log(f"PyAV mux failed, keeping video-only output: {exc}")
         os.replace(video_only_path, output_video_path)
         return False
 
