@@ -3,7 +3,13 @@ __pycache__/
 
 .ultralytics/
 
-videos/
-results/
+videos/*
+!videos/.gitkeep
+
+results/*
+!results/.gitkeep
+
+models/*
+!models/.gitkeep
 
 *.pt

@@ -3,6 +3,7 @@ import logging
 import math
 import subprocess
 import sys
+import urllib.request
 
 import cv2
 import numpy as np
@@ -18,9 +19,55 @@ from ultralytics import YOLO
 
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
+SUPPORTED_POSE_MODELS = (
+    "yolo26n-pose.pt",
+    "yolo26s-pose.pt",
+    "yolo26m-pose.pt",
+    "yolo26l-pose.pt",
+    "yolo26x-pose.pt",
+)
+MODEL_DOWNLOAD_BASE_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
+DEFAULT_MODEL_NAME = "yolo26m-pose.pt"
+
 
 def log(message):
     print(f"[demo_pullup_visual] {message}", flush=True)
+
+
+def ensure_directory(path):
+    os.makedirs(path, exist_ok=True)
+
+
+def download_file(url, destination_path):
+    log(f"downloading model from {url}")
+    urllib.request.urlretrieve(url, destination_path)
+    log(f"download_complete path={destination_path}")
+
+
+def resolve_model_path(models_dir, requested_model_name=None):
+    ensure_directory(models_dir)
+
+    candidate_name = requested_model_name or os.environ.get("PULLUP_MODEL_NAME") or DEFAULT_MODEL_NAME
+    candidate_name = os.path.basename(candidate_name)
+
+    if candidate_name not in SUPPORTED_POSE_MODELS:
+        supported = ", ".join(SUPPORTED_POSE_MODELS)
+        raise ValueError(f"unsupported model '{candidate_name}'. Supported models: {supported}")
+
+    candidate_path = os.path.join(models_dir, candidate_name)
+    if os.path.exists(candidate_path):
+        log(f"using existing model: {candidate_path}")
+        return candidate_path
+
+    for model_name in SUPPORTED_POSE_MODELS:
+        existing_path = os.path.join(models_dir, model_name)
+        if os.path.exists(existing_path):
+            log(f"using existing model: {existing_path}")
+            return existing_path
+
+    model_url = f"{MODEL_DOWNLOAD_BASE_URL}/{candidate_name}"
+    download_file(model_url, candidate_path)
+    return candidate_path
 
 
 def clamp(value, min_value, max_value):
@@ -682,20 +729,21 @@ def process_video(model, input_video_path, output_video_path):
 
 
 def main():
-    model_path = "yolo26m-pose.pt"
+    models_dir = os.path.join(PROJECT_DIR, "models")
     videos_dir = os.path.join(PROJECT_DIR, "videos")
     results_dir = os.path.join(PROJECT_DIR, "results")
 
     log(f"script_dir={PROJECT_DIR}")
-    log(f"model_path={os.path.abspath(model_path)}")
+    log(f"models_dir={models_dir}")
     log(f"videos_dir={videos_dir}")
     log(f"results_dir={results_dir}")
+    ensure_directory(results_dir)
 
-    if not os.path.exists(model_path):
-        log(f"ERROR: model file not found: {model_path}")
+    try:
+        model_path = resolve_model_path(models_dir)
+    except Exception as exc:
+        log(f"ERROR: failed to prepare model: {exc}")
         sys.exit(1)
-
-    os.makedirs(results_dir, exist_ok=True)
 
     input_video_paths = sorted(
         os.path.join(videos_dir, name)
@@ -707,6 +755,7 @@ def main():
         log(f"ERROR: no mp4 files found in {videos_dir}")
         sys.exit(1)
 
+    log(f"model_path={os.path.abspath(model_path)}")
     log("loading YOLO model")
     model = YOLO(model_path)
     log("YOLO model loaded")
