@@ -36,6 +36,14 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+Or install the main dependency directly with `pip`:
+
+```bash
+pip install ultralytics
+```
+
+`ultralytics` installs the core dependencies used by this project, including `numpy` and OpenCV-related packages.
+
 If `ffmpeg` is missing, install it first.
 
 Examples:
