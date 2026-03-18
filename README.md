@@ -1,72 +1,109 @@
 # pullup-analyzer
 
-Pull-up analysis tool using Ultralytics YOLO pose estimation and visual feedback.
+<p align="center">
+  <img src="resource/tilte.png" alt="Pull-Up Analyzer" width="920">
+</p>
 
-## What This Project Does
+<p align="center">
+  풀업 영상을 자동으로 분석해서 <b>반복 횟수</b>, <b>상태</b>, <b>각도</b>, <b>점수</b>, <b>레벨</b>이 포함된 결과 영상을 생성합니다.
+</p>
 
-This project reads `.mp4` videos from the `videos/` folder, estimates the athlete's pose with a YOLO pose model, counts pull-up reps, and writes annotated result videos to the `results/` folder.
+<p align="center">
+  <img src="resource/demo.gif" alt="Pull-Up Analyzer Demo" width="360">
+</p>
 
-The visual overlay includes:
+<p align="center">
+  <a href="resource/demo.mp4">고화질 데모 영상 보기</a>
+  ·
+  <a href="SCORING.md">점수 기준 보기</a>
+</p>
 
-- rep count
-- grip type
-- pull/down phase state
-- tempo and cycle metrics
-- cumulative score and score level
-- score trend graph and per-rep score pop-up
-- average shoulder rise metric
-- best shoulder peak marker
-- elbow angle and motion visualization
-- compact console summaries with a progress bar for each video
+<p align="center">
+  <a href="https://www.youtube.com/@DailyPullUp_%ED%92%80%EC%97%85%EB%A7%A8/shorts">
+    <img
+      src="https://img.shields.io/badge/YouTube-DailyPullUp_%ED%92%80%EC%97%85%EB%A7%A8-FF0000?logo=youtube&logoColor=white"
+      alt="Dailypullup_풀업맨 YouTube"
+    >
+  </a>
+</p>
 
-## Requirements
+<p align="center">
+  유튜브 채널 <b>Dailypullup_풀업맨</b>에서 Shorts 기반 데모와 풀업 기록도 함께 확인할 수 있습니다.
+</p>
 
-- Python 3.10+
-- `av` (PyAV)
-- A supported Ultralytics YOLO pose model
+## 한눈에 보기
 
-## Package Installation Guide
+- `videos/` 폴더에 `.mp4` 영상을 넣고 `python demo.py`를 실행하면 됩니다.
+- 결과 영상은 `results/` 폴더에 저장됩니다.
+- README에는 `GIF`로 바로 보이는 미리보기를 넣고, 자세한 확인은 `MP4` 링크로 연결하는 방식을 추천합니다.
 
-Create and activate a virtual environment:
+## 주요 기능
+
+- `.mp4` 풀업 영상을 자동 분석
+- YOLO pose 모델 기반 사람 자세 추정
+- 풀업 반복 횟수 자동 카운트
+- `PULL UP`, `PULL DOWN`, `DEAD HANG` 상태 시각화
+- 팔 각도, 스켈레톤, 최고 높이, 기준 높이 오버레이
+- 회차별 획득 점수와 누적 점수 계산
+- 레벨 구간 표시
+- 콘솔 진행률 표시 및 실시간 상태 요약
+- 결과 영상 저장 후 원본 오디오 재병합
+
+## 빠른 시작
+
+1. `videos/` 폴더에 분석할 `.mp4` 영상을 넣습니다.
+2. 아래 명령으로 실행합니다.
+
+```bash
+python demo.py
+```
+
+3. 결과는 `results/` 폴더에서 확인합니다.
+
+## 설치
+
+### 권장 환경
+
+- Python `3.10+`
+- `ffmpeg`, `ffprobe`
+- Linux 또는 WSL 환경 권장
+- CUDA가 가능하면 `GPU 0` 우선 사용, 실패 시 자동으로 CPU 전환
+
+### Python 패키지 설치
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-Install Python dependencies:
-
-```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Or install the main dependencies directly with `pip`:
+### 시스템 패키지 설치
 
-```bash
-pip install ultralytics av tqdm
-```
+결과 영상 저장과 오디오 병합은 `ffmpeg/ffprobe` 기준으로 동작합니다.
 
-`ultralytics` installs the core dependencies used by this project, including `numpy` and OpenCV-related packages. `av` is used to copy the original audio stream into the rendered output video without relying on an external `ffmpeg` executable.
-
-Important:
-
-- PyAV's pip package name is `av`, not `pyav`
-- `pip install pyav` fails because there is no package published under that name
-
-If `pip install av` falls back to a source build on Ubuntu or Debian, install the FFmpeg development libraries first:
+Ubuntu / Debian 예시:
 
 ```bash
 sudo apt update
-sudo apt install -y ffmpeg pkg-config \
-  libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev \
-  libavfilter-dev libswscale-dev libswresample-dev
-pip install av
+sudo apt install -y ffmpeg
 ```
 
-## Folder Structure
+## 실행 방법
 
-The repository keeps the directory layout in Git, but the folders are empty by default.
+기본 실행:
+
+```bash
+python demo.py
+```
+
+추론 옵션 조정:
+
+```bash
+python demo.py --conf 0.50 --iou 0.45
+```
+
+## 폴더 구조
 
 ```text
 pullup-analyzer/
@@ -74,6 +111,7 @@ pullup-analyzer/
 ├── requirements.txt
 ├── LICENSE
 ├── README.md
+├── SCORING.md
 ├── pullup_analyzer/
 │   ├── __init__.py
 │   ├── analyzer.py
@@ -82,76 +120,70 @@ pullup-analyzer/
 │   └── state.py
 ├── models/
 ├── videos/
-└── results/
+├── results/
+└── resource/
 ```
 
-Folder usage:
+폴더 용도:
 
-- `models/`: place YOLO pose model weights here
-- `videos/`: place input `.mp4` files here
-- `results/`: generated output videos are written here
+- `models/`: YOLO pose 모델 파일 보관
+- `videos/`: 입력 영상 보관
+- `results/`: 분석 결과 영상 저장
+- `resource/`: 타이틀 이미지 등 리소스 보관
 
-## Supported Pose Models
+## 지원 모델
 
-The script is set up to work with these Ultralytics YOLO pose weights:
+지원 모델:
 
-- `yolo26n-pose.pt`
-- `yolo26s-pose.pt`
-- `yolo26m-pose.pt`
-- `yolo26l-pose.pt`
-- `yolo26x-pose.pt`
+- `yolo26n/s/m/l/x-pose.pt`
 
-The default model is `yolo26s-pose.pt`.
+기본 모델은 `yolo26m-pose.pt`입니다.  
+`models/` 폴더에 기본 모델이 없으면 자동으로 다운로드합니다.
 
-Official references:
-
-- Ultralytics pose task docs: https://docs.ultralytics.com/tasks/pose/
-- `yolo26n-pose.pt`: https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-pose.pt
-- `yolo26s-pose.pt`: https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-pose.pt
-- `yolo26m-pose.pt`: https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26m-pose.pt
-- `yolo26l-pose.pt`: https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26l-pose.pt
-- `yolo26x-pose.pt`: https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x-pose.pt
-
-## Automatic Model Download
-
-If `models/` does not contain a supported `.pt` file, the script automatically downloads the default model:
-
-```text
-models/yolo26s-pose.pt
-```
-
-You can request a different supported model by setting `PULLUP_MODEL_NAME` before running the script:
+다른 모델을 쓰고 싶으면 실행 전에 환경변수로 지정할 수 있습니다.
 
 ```bash
 PULLUP_MODEL_NAME=yolo26s-pose.pt python demo.py
 ```
 
-## How To Run
+## 결과 영상에서 볼 수 있는 정보
 
-1. Put one or more `.mp4` files into `videos/`.
-2. Run the script.
-3. Check generated output files in `results/`.
+- 현재 상태: `READY`, `DEAD HANG`, `PULL UP`, `PULL DOWN`
+- 반복 횟수
+- 그립 타입
+- 현재 각도 점수
+- 회차별 평가 등급
+- 회차별 획득 점수
+- 누적 점수
+- 레벨
+- 최고 높이 / 목표 높이 기준선
 
-Example:
+## 점수 체계
 
-```bash
-python demo.py
-```
+이 프로젝트는 단순 반복 횟수만 세지 않고, 자세 품질까지 반영해서 `누적 Score`를 계산합니다.
 
-Optional CLI arguments:
+- 회차별 점수 누적
+- 높이, 각도, 중심 안정성, 데드행, 탑홀딩 반영
+- 좋은 자세일수록 같은 1회라도 더 높은 점수 획득
 
-```bash
-python demo.py --conf 0.50 --iou 0.45
-```
+자세한 기준은 아래 문서를 참고하세요.
 
-## Notes
+- [SCORING.md](SCORING.md)
 
-- Only `.mp4` files in `videos/` are processed.
-- Result files are saved as `<original_name>_result.mp4`.
-- Original audio is merged back into the output with PyAV when the source video contains audio.
-- The repository does not track large local assets such as videos, results, or model weights.
-- Inference automatically tries GPU `0` first when CUDA is available, and falls back to CPU if GPU inference is not usable in the current environment.
-- Console output shows a color title banner and a fixed two-line live status area so the terminal does not keep scrolling during analysis.
-- Scoring is documented in `SCORING.md`. The project now uses a cumulative `Score` model where each rep gains points from center stability, height, angle, dead-hang quality, and top-hold time.
-- Score levels are `비기너 (0~999)`, `중급자 (1000~1999)`, `고급자 (2000~2999)`, `마스터 (3000~4999)`, and `신 (5000+)`.
-- `Avg Rise` means `Average Shoulder Rise`: the average upward shoulder travel normalized by the athlete's body scale, so it stays comparable across different resolutions and camera distances.
+## 저장 방식
+
+- 결과 영상은 고화질 `H.264` 기반으로 저장됩니다.
+- 원본 영상에 오디오가 있으면 마지막에 다시 붙입니다.
+- 마지막 프레임은 최종 점수와 레벨을 확인할 수 있도록 몇 초간 유지됩니다.
+
+## 참고 사항
+
+- 현재는 `videos/` 폴더의 `.mp4` 파일만 처리합니다.
+- 결과 파일명은 기본적으로 `<원본파일명>_result.mp4` 형식입니다.
+- 콘솔은 스크롤이 과하게 밀리지 않도록 진행률 바와 상태줄 중심으로 출력합니다.
+- 타이틀 이미지는 `resource/` 폴더의 파일을 사용합니다.
+
+## 레퍼런스
+
+- Ultralytics Pose Task Docs: https://docs.ultralytics.com/tasks/pose/
+- Ultralytics GitHub: https://github.com/ultralytics/ultralytics

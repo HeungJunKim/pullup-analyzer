@@ -37,6 +37,10 @@ SUPPORTED_POSE_MODELS = (
 MODEL_DOWNLOAD_BASE_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
 DEFAULT_MODEL_NAME = "yolo26m-pose.pt"
 FINAL_FRAME_HOLD_SECONDS = 3.0
+OUTPUT_VIDEO_CODEC = "libx264"
+OUTPUT_VIDEO_PRESET = "slow"
+OUTPUT_VIDEO_CRF = "14"
+OUTPUT_VIDEO_PIXEL_FORMAT = "yuv420p"
 APP_INFO = AppInfo(
     name="Pull-Up Analyzer",
     version="0.2.0",
@@ -211,11 +215,13 @@ class FFmpegVideoWriter:
                 "-",
                 "-an",
                 "-c:v",
-                "libx264rgb",
+                OUTPUT_VIDEO_CODEC,
                 "-crf",
-                "0",
+                OUTPUT_VIDEO_CRF,
                 "-preset",
-                "veryfast",
+                OUTPUT_VIDEO_PRESET,
+                "-pix_fmt",
+                OUTPUT_VIDEO_PIXEL_FORMAT,
                 "-movflags",
                 "+faststart",
                 str(output_path),
