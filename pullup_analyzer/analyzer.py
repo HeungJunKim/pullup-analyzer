@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -177,6 +178,86 @@ def build_temp_output_path(output_path: Path, tag: str) -> Path:
     return output_path.with_name(f"{output_path.stem}.{tag}{output_path.suffix}")
 
 
+def resolve_system_binary(name: str) -> str | None:
+    return shutil.which(name)
+
+
+class FFmpegVideoWriter:
+    def __init__(self, output_path: Path, *, fps: float, frame_size: tuple[int, int]) -> None:
+        ffmpeg_path = resolve_system_binary("ffmpeg")
+        if ffmpeg_path is None:
+            raise RuntimeError("ffmpeg를 찾지 못했습니다.")
+
+        width, height = frame_size
+        self.output_path = output_path
+        self.frame_size = frame_size
+        self.process = subprocess.Popen(
+            [
+                ffmpeg_path,
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-vcodec",
+                "rawvideo",
+                "-pix_fmt",
+                "bgr24",
+                "-s",
+                f"{width}x{height}",
+                "-r",
+                f"{fps:.06f}",
+                "-i",
+                "-",
+                "-an",
+                "-c:v",
+                "libx264rgb",
+                "-crf",
+                "0",
+                "-preset",
+                "veryfast",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def isOpened(self) -> bool:
+        return self.process.poll() is None and self.process.stdin is not None
+
+    def write(self, frame) -> None:
+        expected_width, expected_height = self.frame_size
+        if frame.shape[1] != expected_width or frame.shape[0] != expected_height:
+            raise ValueError(
+                f"unexpected frame size {frame.shape[1]}x{frame.shape[0]} (expected {expected_width}x{expected_height})"
+            )
+        if not self.isOpened():
+            raise RuntimeError("ffmpeg writer가 이미 종료되었습니다.")
+
+        try:
+            self.process.stdin.write(frame.tobytes())
+        except (BrokenPipeError, OSError) as exc:
+            stderr_text = ""
+            if self.process.stderr is not None:
+                stderr_text = self.process.stderr.read().decode("utf-8", "ignore").strip()
+            raise RuntimeError(stderr_text or f"ffmpeg writer 쓰기 실패: {exc}") from exc
+
+    def release(self) -> None:
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+
+        stderr_text = ""
+        if self.process.stderr is not None:
+            stderr_text = self.process.stderr.read().decode("utf-8", "ignore").strip()
+            self.process.stderr.close()
+
+        return_code = self.process.wait()
+        if return_code != 0:
+            raise RuntimeError(stderr_text or f"ffmpeg writer 종료 실패 (code {return_code})")
+
+
 def resolve_title_image_path(project_dir: Path) -> Path | None:
     candidates = (
         project_dir / "resource" / "title.png",
@@ -220,50 +301,74 @@ def merge_original_audio(
     output_video_path: Path,
     reporter: ConsoleReporter,
 ) -> bool:
-    if av is None:
-        reporter.warn("PyAV가 없어 원본 오디오는 붙이지 못했습니다. 영상은 정상 저장합니다.")
-        os.replace(video_only_path, output_video_path)
-        return False
-
+    ffmpeg_path = resolve_system_binary("ffmpeg")
+    ffprobe_path = resolve_system_binary("ffprobe")
     temp_output_path = build_temp_output_path(output_video_path, "mux")
+    has_audio = False
 
-    try:
-        with av.open(str(video_only_path)) as video_input, av.open(str(source_video_path)) as source_input:
-            if not source_input.streams.audio:
-                os.replace(video_only_path, output_video_path)
-                return False
+    if ffmpeg_path is not None and ffprobe_path is not None:
+        probe = subprocess.run(
+            [
+                ffprobe_path,
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+                str(source_video_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        has_audio = bool(probe.stdout.strip())
+        if not has_audio:
+            os.replace(video_only_path, output_video_path)
+            return False
 
-            input_video_stream = video_input.streams.video[0]
-            with av.open(str(temp_output_path), "w") as output:
-                output_video_stream = output.add_stream(template=input_video_stream)
-                audio_stream_pairs = [
-                    (audio_stream, output.add_stream(template=audio_stream))
-                    for audio_stream in source_input.streams.audio
-                ]
+        mux = subprocess.run(
+            [
+                ffmpeg_path,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video_only_path),
+                "-i",
+                str(source_video_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(temp_output_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if mux.returncode == 0:
+            os.replace(temp_output_path, output_video_path)
+            video_only_path.unlink(missing_ok=True)
+            return True
 
-                for packet in video_input.demux(input_video_stream):
-                    if packet.dts is None:
-                        continue
-                    packet.stream = output_video_stream
-                    output.mux(packet)
-
-                for input_audio_stream, output_audio_stream in audio_stream_pairs:
-                    for packet in source_input.demux(input_audio_stream):
-                        if packet.dts is None:
-                            continue
-                        packet.stream = output_audio_stream
-                        output.mux(packet)
-
-    except Exception as exc:
         if temp_output_path.exists():
             temp_output_path.unlink()
-        reporter.warn(f"원본 오디오를 합치지 못했습니다: {exc}")
+        reporter.warn(f"원본 오디오를 합치지 못했습니다: {mux.stderr.strip() or mux.stdout.strip()}")
         os.replace(video_only_path, output_video_path)
         return False
 
-    os.replace(temp_output_path, output_video_path)
-    video_only_path.unlink(missing_ok=True)
-    return True
+    reporter.warn("ffmpeg/ffprobe를 찾지 못해 원본 오디오는 붙이지 못했습니다. 영상은 정상 저장합니다.")
+    os.replace(video_only_path, output_video_path)
+    return False
 
 
 def process_video(model, job: VideoJob, config: RuntimeConfig, reporter: ConsoleReporter) -> bool:
@@ -276,6 +381,7 @@ def process_video(model, job: VideoJob, config: RuntimeConfig, reporter: Console
     capture = cv2.VideoCapture(str(job.input_path))
     writer = None
     progress = None
+    release_error = None
 
     if not capture.isOpened():
         reporter.error(f"입력 영상을 열지 못했습니다: {job.input_path}")
@@ -291,12 +397,20 @@ def process_video(model, job: VideoJob, config: RuntimeConfig, reporter: Console
             metadata=metadata,
         )
 
-        writer = cv2.VideoWriter(
-            str(temp_output_path),
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            metadata.fps,
-            metadata.output_size,
-        )
+        try:
+            writer = FFmpegVideoWriter(
+                temp_output_path,
+                fps=metadata.fps,
+                frame_size=metadata.output_size,
+            )
+        except Exception as exc:
+            reporter.warn(f"lossless ffmpeg 저장을 시작하지 못해 OpenCV 저장으로 대체합니다: {exc}")
+            writer = cv2.VideoWriter(
+                str(temp_output_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                metadata.fps,
+                metadata.output_size,
+            )
         if not writer.isOpened():
             reporter.error(f"결과 영상을 만들지 못했습니다: {temp_output_path}")
             return False
@@ -372,9 +486,17 @@ def process_video(model, job: VideoJob, config: RuntimeConfig, reporter: Console
     finally:
         capture.release()
         if writer is not None:
-            writer.release()
+            try:
+                writer.release()
+            except Exception as exc:
+                release_error = exc
         if progress is not None:
             progress.close()
+
+    if release_error is not None:
+        reporter.error(f"결과 영상 저장을 마무리하지 못했습니다: {release_error}")
+        temp_output_path.unlink(missing_ok=True)
+        return False
 
     audio_merged = merge_original_audio(temp_output_path, job.input_path, job.output_path, reporter)
     reporter.video_finished(

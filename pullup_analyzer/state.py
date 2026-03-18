@@ -18,7 +18,7 @@ SCORE_LEVEL_ADVANCED = "Advanced"
 SCORE_LEVEL_MASTER = "Master"
 SCORE_LEVEL_GOD = "God"
 
-SCORE_GUIDE_VALUES = (800, 1600, 2400, 4000)
+SCORE_GUIDE_VALUES = (1000, 2000, 3000, 5000)
 
 
 def clamp(value: float, min_value: float, max_value: float) -> float:
@@ -56,6 +56,14 @@ class AnalysisThresholds:
     trajectory_sample_seconds: float = 0.05
     score_sample_seconds: float = 0.30
     reference_smoothing: float = 0.22
+    top_hold_zone_height_score: int = 80
+    top_hold_zone_angle_score: int = 80
+    top_hold_peak_tolerance_ratio: float = 0.025
+    top_hold_stationary_ratio: float = 0.45
+    top_hold_bonus_step_seconds: float = 0.10
+    top_hold_bonus_per_step: int = 5
+    top_hold_bonus_max_seconds: float = 1.0
+    height_target_forearm_ratio: float = 1.0 / 3.0
 
 
 @dataclass(frozen=True)
@@ -128,6 +136,12 @@ class PoseFrame:
         return float((left_arm + right_arm) / 2.0)
 
     @property
+    def average_forearm_length(self) -> float:
+        left_forearm = np.linalg.norm(self.left_elbow - self.left_wrist)
+        right_forearm = np.linalg.norm(self.right_elbow - self.right_wrist)
+        return float((left_forearm + right_forearm) / 2.0)
+
+    @property
     def body_scale(self) -> float:
         return max(1.0, self.shoulder_width, self.torso_length, self.average_arm_length * 0.7)
 
@@ -157,6 +171,8 @@ class PullUpMetrics:
     average_height_score: int = 0
     best_height_score: int = 0
     current_height_score: int = 0
+    top_hold_seconds: float = 0.0
+    height_target_y: Optional[float] = None
     current_shoulder_rise_px: float = 0.0
     current_shoulder_rise_ratio: float = 0.0
     baseline_shoulder_y: Optional[float] = None
@@ -165,6 +181,8 @@ class PullUpMetrics:
     body_scale: float = 0.0
     peak_left_shoulder_x: Optional[float] = None
     peak_left_wrist_x: Optional[float] = None
+    peak_right_shoulder_x: Optional[float] = None
+    peak_right_wrist_x: Optional[float] = None
 
 
 @dataclass
@@ -178,6 +196,7 @@ class PullUpState:
     previous_left_angle: Optional[float] = None
     previous_right_angle: Optional[float] = None
     previous_shoulder_y: Optional[float] = None
+    previous_wrist_y: Optional[float] = None
     pullup_count: int = 0
     frame_index: int = 0
     phase_start_frame: int = 0
@@ -191,12 +210,17 @@ class PullUpState:
     reference_bar_y: Optional[float] = None
     reference_shoulder_y: Optional[float] = None
     reference_body_scale: Optional[float] = None
+    reference_forearm_length: Optional[float] = None
     current_rep_peak_y: Optional[float] = None
+    current_rep_peak_wrist_y: Optional[float] = None
     current_rep_min_angle: float = 180.0
     current_rep_started_from_deadhang: bool = False
+    current_top_hold_frames: int = 0
     best_peak_y: Optional[float] = None
     best_peak_left_shoulder_x: Optional[float] = None
     best_peak_left_wrist_x: Optional[float] = None
+    best_peak_right_shoulder_x: Optional[float] = None
+    best_peak_right_wrist_x: Optional[float] = None
     shoulder_center_trace: list[tuple[float, float]] = field(default_factory=list)
     hip_center_trace: list[tuple[float, float]] = field(default_factory=list)
     body_center_trace: list[tuple[float, float]] = field(default_factory=list)
@@ -208,6 +232,7 @@ class PullUpState:
     last_score_sample_frame: Optional[int] = None
     last_rep_score_value: Optional[int] = None
     last_rep_score_frame: Optional[int] = None
+    last_top_hold_seconds: float = 0.0
 
     def set_fps(self, fps: float) -> None:
         if fps > 0:
@@ -254,19 +279,54 @@ class PullUpState:
         rise_ratio = rise_pixels / reference_scale if reference_scale > 0 else 0.0
         return rise_pixels, rise_ratio
 
-    def _height_score(self, shoulder_y: Optional[float]) -> int:
+    def _height_target_gap(self) -> float:
+        forearm_length = self.reference_forearm_length or 0.0
+        return max(1.0, forearm_length * self.thresholds.height_target_forearm_ratio)
+
+    def _height_target_y(self) -> Optional[float]:
+        if self.reference_bar_y is None:
+            return None
+        return self.reference_bar_y + self._height_target_gap()
+
+    def _height_score(self, shoulder_y: Optional[float], wrist_y: Optional[float] = None) -> int:
         if shoulder_y is None or self.reference_shoulder_y is None or self.reference_bar_y is None:
             return 0
-        target_distance = self.reference_shoulder_y - self.reference_bar_y
-        if target_distance <= 1.0:
+        current_wrist_y = self.reference_bar_y if wrist_y is None else wrist_y
+        reference_gap = self.reference_shoulder_y - self.reference_bar_y
+        if reference_gap <= 1.0:
             return 0
-        rise_to_peak = self.reference_shoulder_y - shoulder_y
-        return int(round(clamp(rise_to_peak / target_distance, 0.0, 1.0) * 100))
+
+        target_gap = self._height_target_gap()
+        shoulder_wrist_gap = shoulder_y - current_wrist_y
+        if shoulder_wrist_gap <= target_gap:
+            return 100
+
+        reference_span = max(1.0, reference_gap - target_gap)
+        quality = 1.0 - ((shoulder_wrist_gap - target_gap) / reference_span)
+        return int(round(clamp(quality, 0.0, 1.0) * 100))
+
+    def _height_adjustment(self, shoulder_y: Optional[float], wrist_y: Optional[float] = None) -> float:
+        if shoulder_y is None or self.reference_shoulder_y is None or self.reference_bar_y is None:
+            return -10.0
+
+        current_wrist_y = self.reference_bar_y if wrist_y is None else wrist_y
+        target_gap = self._height_target_gap()
+        shoulder_wrist_gap = shoulder_y - current_wrist_y
+
+        if shoulder_wrist_gap <= target_gap:
+            bonus_ratio = clamp((target_gap - shoulder_wrist_gap) / target_gap, 0.0, 1.0)
+            return bonus_ratio * 10.0
+
+        reference_gap = self.reference_shoulder_y - self.reference_bar_y
+        penalty_span = max(1.0, reference_gap - target_gap)
+        penalty_ratio = clamp((shoulder_wrist_gap - target_gap) / penalty_span, 0.0, 1.0)
+        return -penalty_ratio * 10.0
 
     def _update_hanging_reference(self, pose: PoseFrame) -> None:
         self.reference_bar_y = self._smooth_value(self.reference_bar_y, pose.wrist_y)
         self.reference_shoulder_y = self._smooth_value(self.reference_shoulder_y, pose.shoulder_y)
         self.reference_body_scale = self._smooth_value(self.reference_body_scale, pose.body_scale)
+        self.reference_forearm_length = self._smooth_value(self.reference_forearm_length, pose.average_forearm_length)
 
     def _reset_hanging_state(self) -> None:
         self.is_standing = True
@@ -275,9 +335,12 @@ class PullUpState:
         self.reference_bar_y = None
         self.reference_shoulder_y = None
         self.reference_body_scale = None
+        self.reference_forearm_length = None
         self.current_rep_peak_y = None
+        self.current_rep_peak_wrist_y = None
         self.current_rep_min_angle = 180.0
         self.current_rep_started_from_deadhang = False
+        self.current_top_hold_frames = 0
         self.shoulder_center_trace.clear()
         self.hip_center_trace.clear()
         self.body_center_trace.clear()
@@ -311,8 +374,10 @@ class PullUpState:
     def _start_rep_tracking(self, pose: PoseFrame, elbow_min_angle: float, *, started_from_deadhang: bool) -> None:
         shoulder_y = pose.shoulder_y
         self.current_rep_peak_y = shoulder_y
+        self.current_rep_peak_wrist_y = pose.wrist_y
         self.current_rep_min_angle = elbow_min_angle
         self.current_rep_started_from_deadhang = started_from_deadhang
+        self.current_top_hold_frames = 0
         self._update_best_peak(pose)
 
     def _update_rep_tracking(self, pose: PoseFrame, elbow_min_angle: float) -> None:
@@ -322,7 +387,9 @@ class PullUpState:
             return
 
         previous_peak_y = self.current_rep_peak_y
-        self.current_rep_peak_y = min(self.current_rep_peak_y, shoulder_y)
+        if shoulder_y < self.current_rep_peak_y:
+            self.current_rep_peak_y = shoulder_y
+            self.current_rep_peak_wrist_y = pose.wrist_y
         self.current_rep_min_angle = min(self.current_rep_min_angle, elbow_min_angle)
         if previous_peak_y is not None and self.current_rep_peak_y >= previous_peak_y:
             return
@@ -339,6 +406,8 @@ class PullUpState:
         self.best_peak_y = shoulder_y
         self.best_peak_left_shoulder_x = float(pose.left_shoulder[0])
         self.best_peak_left_wrist_x = float(pose.left_wrist[0])
+        self.best_peak_right_shoulder_x = float(pose.right_shoulder[0])
+        self.best_peak_right_wrist_x = float(pose.right_wrist[0])
 
     def _current_tempo_score(self) -> float:
         if len(self.rep_durations) < 2:
@@ -367,39 +436,80 @@ class PullUpState:
             1.0,
         )
 
-    def _build_rep_score(self, peak_shoulder_y: float, rep_min_angle: float) -> tuple[int, int]:
+    def _angle_adjustment(self, minimum_angle: float) -> float:
+        target_angle = self.thresholds.target_angle
+        if minimum_angle <= target_angle:
+            bonus_ratio = clamp((target_angle - minimum_angle) / max(1.0, target_angle), 0.0, 1.0)
+            return bonus_ratio * 10.0
+
+        penalty_span = max(1.0, self.thresholds.full_extension_angle - target_angle)
+        penalty_ratio = clamp((minimum_angle - target_angle) / penalty_span, 0.0, 1.0)
+        return -penalty_ratio * 10.0
+
+    def _update_top_hold_tracking(
+        self,
+        shoulder_y: float,
+        wrist_y: float,
+        elbow_min_angle: float,
+        shoulder_velocity: float,
+        body_scale: float,
+    ) -> None:
+        if self.current_rep_peak_y is None:
+            return
+
+        height_score = self._height_score(shoulder_y, wrist_y)
+        angle_score = int(round(self._angle_quality(elbow_min_angle) * 100))
+        stationary_threshold = self._motion_threshold(body_scale) * self.thresholds.top_hold_stationary_ratio
+        peak_tolerance = max(1.0, body_scale * self.thresholds.top_hold_peak_tolerance_ratio)
+        near_peak = shoulder_y <= self.current_rep_peak_y + peak_tolerance
+        near_top = height_score >= self.thresholds.top_hold_zone_height_score
+        strong_angle = angle_score >= self.thresholds.top_hold_zone_angle_score
+        controlled = abs(shoulder_velocity) <= stationary_threshold
+        if near_peak and near_top and strong_angle and controlled:
+            self.current_top_hold_frames += 1
+
+    def _top_hold_bonus(self) -> int:
+        hold_seconds = min(
+            self.seconds_from_frames(self.current_top_hold_frames),
+            self.thresholds.top_hold_bonus_max_seconds,
+        )
+        if hold_seconds < self.thresholds.top_hold_bonus_step_seconds:
+            return 0
+        hold_steps = int(hold_seconds / self.thresholds.top_hold_bonus_step_seconds)
+        return hold_steps * self.thresholds.top_hold_bonus_per_step
+
+    def _build_rep_score(self, peak_shoulder_y: float, peak_wrist_y: Optional[float], rep_min_angle: float) -> tuple[int, int]:
         angle_quality = self._angle_quality(rep_min_angle)
-        height_quality = self._height_score(peak_shoulder_y) / 100.0
+        height_quality = self._height_score(peak_shoulder_y, peak_wrist_y) / 100.0
+        height_adjustment = self._height_adjustment(peak_shoulder_y, peak_wrist_y)
+        angle_adjustment = self._angle_adjustment(rep_min_angle)
         sway_quality = self._current_sway_score()
-        tempo_quality = self._current_tempo_score()
 
         sway_penalty = (1.0 - sway_quality) * 5.0
-        tempo_penalty = (1.0 - tempo_quality) * 5.0
-        height_penalty = (1.0 - height_quality) * 10.0
-        angle_penalty = (1.0 - angle_quality) * 10.0
         deadhang_bonus = 10.0 if self.current_rep_started_from_deadhang else 0.0
+        top_hold_bonus = float(self._top_hold_bonus())
 
-        rep_score = int(round(clamp(
-            90.0 - sway_penalty - tempo_penalty - height_penalty - angle_penalty + deadhang_bonus,
+        rep_score = int(round(max(
             0.0,
-            100.0,
+            90.0 - sway_penalty + height_adjustment + angle_adjustment + deadhang_bonus + top_hold_bonus,
         )))
         return rep_score, int(round(height_quality * 100))
 
     def _score_level(self, total_score: int) -> str:
-        if total_score >= 4000:
+        if total_score >= 5000:
             return SCORE_LEVEL_GOD
-        if total_score >= 2400:
+        if total_score >= 3000:
             return SCORE_LEVEL_MASTER
-        if total_score >= 1600:
+        if total_score >= 2000:
             return SCORE_LEVEL_ADVANCED
-        if total_score >= 800:
+        if total_score >= 1000:
             return SCORE_LEVEL_INTERMEDIATE
         return SCORE_LEVEL_BEGINNER
 
     def _finalize_rep_tracking(self) -> None:
         if self.current_rep_peak_y is None or self.reference_shoulder_y is None:
             self.current_rep_peak_y = None
+            self.current_rep_peak_wrist_y = None
             self.current_rep_min_angle = 180.0
             self.current_rep_started_from_deadhang = False
             return
@@ -411,17 +521,27 @@ class PullUpState:
         self._append_limited(self.rep_peak_rise_pixels, rise_pixels)
         self._append_limited(self.rep_peak_rise_ratios, rise_ratio)
         self._append_limited(self.rep_min_elbow_angles, self.current_rep_min_angle)
-        rep_score, rep_height_score = self._build_rep_score(self.current_rep_peak_y, self.current_rep_min_angle)
+        rep_score, rep_height_score = self._build_rep_score(
+            self.current_rep_peak_y,
+            self.current_rep_peak_wrist_y,
+            self.current_rep_min_angle,
+        )
         self.rep_scores.append(rep_score)
         self.rep_height_scores.append(rep_height_score)
         self.score_total += rep_score
         self.last_rep_score_value = rep_score
         self.last_rep_score_frame = self.frame_index
+        self.last_top_hold_seconds = min(
+            self.seconds_from_frames(self.current_top_hold_frames),
+            self.thresholds.top_hold_bonus_max_seconds,
+        )
         self._record_score_sample(self.score_total, force=True)
 
         self.current_rep_peak_y = None
+        self.current_rep_peak_wrist_y = None
         self.current_rep_min_angle = 180.0
         self.current_rep_started_from_deadhang = False
+        self.current_top_hold_frames = 0
 
     def _update_center_traces(self, pose: PoseFrame) -> None:
         sample_interval = max(1, int(round(self.fps * self.thresholds.trajectory_sample_seconds)))
@@ -533,7 +653,12 @@ class PullUpState:
 
         average_height_score = int(round(float(np.mean(self.rep_height_scores)))) if self.rep_height_scores else 0
         best_height_score = self._height_score(self.best_peak_y)
-        current_height_score = self._height_score(self.previous_shoulder_y)
+        current_height_score = self._height_score(self.previous_shoulder_y, self.previous_wrist_y)
+        current_top_hold_seconds = min(
+            self.seconds_from_frames(self.current_top_hold_frames),
+            self.thresholds.top_hold_bonus_max_seconds,
+        )
+        display_top_hold_seconds = current_top_hold_seconds if current_top_hold_seconds > 0 else self.last_top_hold_seconds
 
         ascent_score = (
             average_height_score / 100.0
@@ -568,6 +693,8 @@ class PullUpState:
             average_height_score=average_height_score,
             best_height_score=best_height_score,
             current_height_score=current_height_score,
+            top_hold_seconds=display_top_hold_seconds,
+            height_target_y=self._height_target_y(),
             current_shoulder_rise_px=current_rise_pixels,
             current_shoulder_rise_ratio=current_rise_ratio,
             baseline_shoulder_y=self.reference_shoulder_y,
@@ -576,6 +703,8 @@ class PullUpState:
             body_scale=self.reference_body_scale or 0.0,
             peak_left_shoulder_x=self.best_peak_left_shoulder_x,
             peak_left_wrist_x=self.best_peak_left_wrist_x,
+            peak_right_shoulder_x=self.best_peak_right_shoulder_x,
+            peak_right_wrist_x=self.best_peak_right_wrist_x,
         )
 
     def update(self, pose: PoseFrame) -> PullUpMetrics:
@@ -623,6 +752,7 @@ class PullUpState:
                 new_state = STATE_PULL
             elif self.current_state == STATE_PULL:
                 self._update_rep_tracking(pose, elbow_min_angle)
+                self._update_top_hold_tracking(shoulder_y, wrist_y, elbow_min_angle, shoulder_velocity, body_scale)
                 if self._can_detect_down(left_angle, right_angle, rise_ratio, shoulder_velocity, body_scale):
                     new_state = STATE_DOWN
                 else:
@@ -634,6 +764,7 @@ class PullUpState:
         self.previous_left_angle = left_angle
         self.previous_right_angle = right_angle
         self.previous_shoulder_y = shoulder_y
+        self.previous_wrist_y = wrist_y
 
         self._record_transition(new_state)
         self.current_state = new_state

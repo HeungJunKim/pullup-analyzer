@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 import sys
+import textwrap
 from typing import Optional
 
 from tqdm.auto import tqdm
@@ -37,7 +39,7 @@ GRIP_LABELS = {
 }
 
 SCORE_LEVEL_LABELS = {
-    "Beginner": "초급자",
+    "Beginner": "비기너",
     "Intermediate": "중급자",
     "Advanced": "고급자",
     "Master": "마스터",
@@ -79,6 +81,11 @@ def color_enabled() -> bool:
     return sys.stdout.isatty()
 
 
+def console_width() -> int:
+    terminal_width = shutil.get_terminal_size(fallback=(DIVIDER_WIDTH, 24)).columns
+    return max(72, min(DIVIDER_WIDTH, terminal_width - 2))
+
+
 def paint(text: str, *codes: str) -> str:
     if not color_enabled() or not codes:
         return text
@@ -101,6 +108,36 @@ def humanize_score_level(label: str) -> str:
     return SCORE_LEVEL_LABELS.get(label, label)
 
 
+def compact_phase_label(state: str) -> str:
+    return {
+        "Stand": "Stand",
+        "Ready": "Ready",
+        "Deadhang": "DeadHang",
+        "Pull": "Pull",
+        "Down": "Down",
+    }.get(state, state)
+
+
+def compact_grip_label(grip: str) -> str:
+    return {
+        "-": "--",
+        "Wide": "Wide",
+        "Narrow": "Narrow",
+    }.get(grip, grip)
+
+
+def rep_grade_label(rep_score: int) -> str:
+    if rep_score >= 130:
+        return "EXCELLENT"
+    if rep_score >= 105:
+        return "GOOD"
+    if rep_score > 90:
+        return "NORMAL"
+    if rep_score > 0:
+        return "BAD"
+    return "TRACKING"
+
+
 def humanize_device(device: str) -> str:
     if device == "cpu":
         return "CPU 전용"
@@ -114,23 +151,30 @@ def rotation_message(rotate_for_portrait: bool) -> str:
 
 
 def analysis_status(metrics: "PullUpMetrics") -> str:
-    tempo_label = "계산 중" if metrics.tempo_spm <= 0 else f"분당 {metrics.tempo_spm:.1f}회"
-    score_label = f"{metrics.total_score:,d}점"
-    height_label = "계산 중" if metrics.best_height_score <= 0 else f"최고 {metrics.best_height_score:>3d}점"
+    tempo_label = "--" if metrics.tempo_spm <= 0 else f"{metrics.tempo_spm:.1f}spm"
+    rep_grade = rep_grade_label(metrics.last_rep_score)
+    rep_score = "--" if metrics.last_rep_score <= 0 else f"+{metrics.last_rep_score:d}"
+    total_score = f"{metrics.total_score:,d}"
+    columns = (
+        f"{compact_phase_label(metrics.state):<8}",
+        f"{metrics.count:>2d} reps",
+        f"{compact_grip_label(metrics.grip):<6}",
+        f"{tempo_label:>8}",
+        f"{rep_grade:<10}",
+        f"{rep_score:>5}",
+        f"{total_score:>7}",
+        f"{metrics.score_level:<12}",
+    )
     return (
-        f"현재 동작: {humanize_phase(metrics.state)} | "
-        f"반복 횟수: {metrics.count:>2d}회 | "
-        f"그립: {humanize_grip(metrics.grip)} | "
-        f"속도: {tempo_label} | "
-        f"높이: {height_label} | "
-        f"점수: {score_label} | "
-        f"레벨: {humanize_score_level(metrics.score_level)}"
+        f"{columns[0]} | {columns[1]} | {columns[2]} | {columns[3]} | "
+        f"{columns[4]} | {columns[5]} | {columns[6]} | {columns[7]}"
     )
 
 
 class VideoProgress:
     def __init__(self, label: str, total_frames: int) -> None:
         total = total_frames if total_frames > 0 else None
+        progress_width = console_width()
         bar_format = (
             "{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
             if total is not None
@@ -140,7 +184,8 @@ class VideoProgress:
             total=total,
             desc=label,
             unit="프레임",
-            dynamic_ncols=True,
+            dynamic_ncols=False,
+            ncols=progress_width,
             mininterval=0.15,
             leave=False,
             colour="cyan" if color_enabled() else None,
@@ -150,7 +195,8 @@ class VideoProgress:
         self._status = tqdm(
             total=0,
             desc="현재 동작을 읽는 중입니다...",
-            dynamic_ncols=True,
+            dynamic_ncols=False,
+            ncols=progress_width,
             mininterval=0.15,
             leave=False,
             position=1,
@@ -177,20 +223,58 @@ class ConsoleReporter:
     def __init__(self, app_info: AppInfo) -> None:
         self.app_info = app_info
 
+    def _wrap_text(self, text: str, width: int) -> list[str]:
+        return textwrap.wrap(
+            text,
+            width=max(20, width),
+            break_long_words=False,
+            break_on_hyphens=False,
+        ) or [""]
+
+    def _write_lines(self, prefix: str, lines: list[str]) -> None:
+        if not lines:
+            return
+        prefix_text = paint(prefix, "1", "38;5;117")
+        indent = " " * (len(prefix) + 1)
+        tqdm.write(f"{prefix_text} {lines[0]}")
+        for line in lines[1:]:
+            tqdm.write(f"{indent}{line}")
+
     def _write(self, prefix: str, message: str) -> None:
-        tqdm.write(f"{paint(prefix, '1', '38;5;117')} {message}")
+        content_width = DIVIDER_WIDTH - len(prefix) - 1
+        self._write_lines(prefix, self._wrap_text(message, content_width))
+
+    def _write_table(self, prefix: str, title: str, rows: list[tuple[str, str]]) -> None:
+        content_width = DIVIDER_WIDTH - len(prefix) - 1
+        label_width = max((len(label) for label, _ in rows), default=0)
+        lines = [title]
+        for label, value in rows:
+            key = f"- {label:<{label_width}} : "
+            wrapped = self._wrap_text(value, content_width - len(key))
+            lines.append(f"{key}{wrapped[0]}")
+            continuation = " " * len(key)
+            for extra_line in wrapped[1:]:
+                lines.append(f"{continuation}{extra_line}")
+        self._write_lines(prefix, lines)
 
     def _divider(self) -> str:
         return paint("=" * DIVIDER_WIDTH, "1", DIVIDER_CODE)
 
     def banner(self) -> None:
         tqdm.write(self._divider())
-        for line_index, line in enumerate(ASCII_TITLE.splitlines()):
-            tqdm.write(title_text(line, line_index))
+        title_lines = ASCII_TITLE.splitlines()
+        block_width = max(len(line) for line in title_lines)
+        block_indent = max(0, (DIVIDER_WIDTH - block_width) // 2)
+        prefix = " " * block_indent
+        for line_index, line in enumerate(title_lines):
+            tqdm.write(title_text(f"{prefix}{line}", line_index))
+        subtitle = (
+            f"{self.app_info.name} | version {self.app_info.version} | "
+            f"author {self.app_info.author} | repo {self.app_info.repository}"
+        )
         tqdm.write(
             paint(
-                f"{self.app_info.name} | version {self.app_info.version} | "
-                f"author {self.app_info.author} | repo {self.app_info.repository}",
+                subtitle.center(DIVIDER_WIDTH),
                 "1",
                 "38;5;189",
             )
@@ -215,9 +299,17 @@ class ConsoleReporter:
         video_count: int,
         results_dir: Path,
     ) -> None:
-        self.info(f"작업 폴더: {project_dir}")
-        self.info(f"사용 모델: {model_name} | 처리 방식: {humanize_device(device)}")
-        self.info(f"분석할 영상: {video_count}개 | 결과 저장 위치: {results_dir}")
+        self._write_table(
+            "[안내]",
+            "실행 정보",
+            [
+                ("작업 폴더", str(project_dir)),
+                ("사용 모델", model_name),
+                ("처리 방식", humanize_device(device)),
+                ("분석할 영상", f"{video_count}개"),
+                ("결과 위치", str(results_dir)),
+            ],
+        )
 
     def video_started(
         self,
@@ -228,16 +320,17 @@ class ConsoleReporter:
         output_path: Path,
         metadata: VideoMetadata,
     ) -> None:
-        self._write(
+        self._write_table(
             "[진행]",
-            (
-                f"영상 {index}/{total} 시작: {input_path.name} | "
-                f"길이 {format_duration(metadata.duration_seconds)} | "
-                f"화면 {metadata.width}x{metadata.height} -> {metadata.output_size[0]}x{metadata.output_size[1]} | "
-                f"{rotation_message(metadata.rotate_for_portrait)}"
-            ),
+            f"영상 {index}/{total} 시작",
+            [
+                ("파일", input_path.name),
+                ("길이", format_duration(metadata.duration_seconds)),
+                ("화면", f"{metadata.width}x{metadata.height} -> {metadata.output_size[0]}x{metadata.output_size[1]}"),
+                ("방향", rotation_message(metadata.rotate_for_portrait)),
+                ("결과 파일", str(output_path)),
+            ],
         )
-        self.info(f"결과 파일: {output_path}")
 
     def video_finished(
         self,
@@ -248,18 +341,21 @@ class ConsoleReporter:
         audio_merged: bool,
     ) -> None:
         audio_state = "오디오 유지" if audio_merged else "영상만 저장"
-        height_text = "높이 점수 계산 중" if metrics.average_height_score <= 0 else f"평균 높이 점수 {metrics.average_height_score:>3d}점"
-        self._write(
+        rep_grade = rep_grade_label(metrics.last_rep_score)
+        rep_score = "판정 없음" if metrics.last_rep_score <= 0 else f"+{metrics.last_rep_score:d}점"
+        self._write_table(
             "[완료]",
-            (
-                f"{output_path.name} 저장 완료 | 총 {metrics.count}회 | "
-                f"그립 {humanize_grip(metrics.grip)} | "
-                f"속도 분당 {metrics.tempo_spm:.1f}회 | "
-                f"{height_text} | "
-                f"종합 점수 {metrics.total_score:,d}점 | "
-                f"레벨 {humanize_score_level(metrics.score_level)} | "
-                f"{audio_state}"
-            ),
+            f"{output_path.name} 저장 완료",
+            [
+                ("반복 횟수", f"{metrics.count}회"),
+                ("그립", humanize_grip(metrics.grip)),
+                ("속도", f"{metrics.tempo_spm:.1f}spm"),
+                ("마지막 평가", rep_grade),
+                ("마지막 점수", rep_score),
+                ("누적 점수", f"{metrics.total_score:,d}점"),
+                ("레벨", humanize_score_level(metrics.score_level)),
+                ("오디오", audio_state),
+            ],
         )
 
     def batch_finished(self, *, success_count: int, total_count: int, elapsed_seconds: float) -> None:

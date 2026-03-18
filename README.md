@@ -152,6 +152,6 @@ python demo.py --conf 0.50 --iou 0.45
 - The repository does not track large local assets such as videos, results, or model weights.
 - Inference automatically tries GPU `0` first when CUDA is available, and falls back to CPU if GPU inference is not usable in the current environment.
 - Console output shows a color title banner and a fixed two-line live status area so the terminal does not keep scrolling during analysis.
-- Scoring is documented in `SCORING.md`. The project now uses a cumulative `Score` model where each rep can earn up to `100` points based on center stability, tempo, height, angle, and a dead-hang bonus.
-- Score levels are `초급자 (0~799)`, `중급자 (800~1599)`, `고급자 (1600~2399)`, `마스터 (2400~3999)`, and `신 (4000+)`.
+- Scoring is documented in `SCORING.md`. The project now uses a cumulative `Score` model where each rep gains points from center stability, height, angle, dead-hang quality, and top-hold time.
+- Score levels are `비기너 (0~999)`, `중급자 (1000~1999)`, `고급자 (2000~2999)`, `마스터 (3000~4999)`, and `신 (5000+)`.
 - `Avg Rise` means `Average Shoulder Rise`: the average upward shoulder travel normalized by the athlete's body scale, so it stays comparable across different resolutions and camera distances.

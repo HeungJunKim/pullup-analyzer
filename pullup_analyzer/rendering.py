@@ -52,13 +52,13 @@ SCORE_LEVEL_LABELS = {
     SCORE_LEVEL_GOD: "GOD",
 }
 
-SCORE_BAR_DISPLAY_MAX = 5000
+SCORE_BAR_DISPLAY_MAX = 6000
 SCORE_BAR_SEGMENTS = (
-    (0, 800, "BEGINNER", SCORE_LEVEL_BEGINNER),
-    (800, 1600, "INTERMEDIATE", SCORE_LEVEL_INTERMEDIATE),
-    (1600, 2400, "ADVANCED", SCORE_LEVEL_ADVANCED),
-    (2400, 4000, "MASTER", SCORE_LEVEL_MASTER),
-    (4000, SCORE_BAR_DISPLAY_MAX, "GOD", SCORE_LEVEL_GOD),
+    (0, 1000, "BEGINNER", SCORE_LEVEL_BEGINNER),
+    (1000, 2000, "INTERMEDIATE", SCORE_LEVEL_INTERMEDIATE),
+    (2000, 3000, "ADVANCED", SCORE_LEVEL_ADVANCED),
+    (3000, 5000, "MASTER", SCORE_LEVEL_MASTER),
+    (5000, SCORE_BAR_DISPLAY_MAX, "GOD", SCORE_LEVEL_GOD),
 )
 
 
@@ -93,13 +93,23 @@ def score_level_label(level: str) -> str:
 
 
 def rep_score_color(rep_score: int) -> tuple[int, int, int]:
-    if rep_score >= 95:
+    if rep_score >= 130:
         return (94, 214, 255)
-    if rep_score >= 85:
+    if rep_score >= 105:
         return (98, 211, 179)
-    if rep_score >= 75:
+    if rep_score > 90:
         return (96, 174, 255)
     return (150, 162, 178)
+
+
+def rep_grade_label(rep_score: int) -> str:
+    if rep_score >= 130:
+        return "EXCELLENT"
+    if rep_score >= 105:
+        return "GOOD"
+    if rep_score > 90:
+        return "NORMAL"
+    return "BAD"
 
 
 def score_axis_max(max_score: int) -> int:
@@ -339,14 +349,14 @@ def draw_score_gain_popup(image, pullup_state: PullUpState, frame_shape, *, anch
     alpha = clamp(1.0 - progress, 0.0, 1.0)
     text = f"+{pullup_state.last_rep_score_value:d}"
     font = cv2.FONT_HERSHEY_DUPLEX
-    font_scale = 0.84 * scale * (1.0 + (1.0 - progress) * 0.08)
+    font_scale = 1.12 * scale * (1.0 + (1.0 - progress) * 0.08)
     thickness = max(2, int(round(2.5 * scale)))
     text_color = rep_score_color(pullup_state.last_rep_score_value)
 
     float_y = anchor_y - int(round(progress * 18 * scale))
     (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-    padding_x = max(12, int(round(16 * scale)))
-    padding_y = max(8, int(round(10 * scale)))
+    padding_x = max(14, int(round(18 * scale)))
+    padding_y = max(10, int(round(12 * scale)))
     x1 = max(8, anchor_x)
     x2 = min(frame_shape[1] - 8, x1 + text_width + padding_x * 2)
     y1 = max(8, float_y - text_height - padding_y)
@@ -394,10 +404,10 @@ def draw_score_level_bar(image, metrics: PullUpMetrics, pullup_state: PullUpStat
     banner_height = title_banner.shape[0] if title_banner is not None else 0
 
     panel_left = max(12, int(round(18 * scale)))
-    panel_top = max(banner_height + int(round(18 * scale)), int(round(height * 0.20)))
-    panel_bottom = min(int(round(height * 0.68)), height - int(round(44 * scale)))
-    panel_width = max(150, int(round(220 * scale)))
-    min_panel_height = int(round(180 * scale))
+    panel_top = max(banner_height + int(round(16 * scale)), int(round(height * 0.24)))
+    panel_bottom = min(int(round(height * 0.58)), height - int(round(44 * scale)))
+    panel_width = max(144, int(round(190 * scale)))
+    min_panel_height = int(round(126 * scale))
     if panel_bottom - panel_top < min_panel_height:
         panel_top = max(banner_height + int(round(18 * scale)), panel_bottom - min_panel_height)
     panel_right = min(width - 12, panel_left + panel_width)
@@ -407,39 +417,30 @@ def draw_score_level_bar(image, metrics: PullUpMetrics, pullup_state: PullUpStat
         (panel_left, panel_top),
         (panel_right, panel_bottom),
         (12, 18, 28),
-        alpha=0.56,
-        radius=max(16, int(round(22 * scale))),
+        alpha=0.54,
+        radius=max(14, int(round(18 * scale))),
         border_color=(62, 76, 98),
         border_thickness=max(1, int(round(2 * scale))),
     )
 
     title_x = panel_left + int(round(16 * scale))
-    cv2.putText(
-        image,
-        "LEVEL",
-        (title_x, panel_top + int(round(24 * scale))),
-        cv2.FONT_HERSHEY_DUPLEX,
-        0.46 * scale,
-        (204, 214, 228),
-        max(1, int(round(1.5 * scale))),
-        cv2.LINE_AA,
-    )
+    bar_left = panel_left + int(round(20 * scale))
+    bar_right = bar_left + max(18, int(round(28 * scale)))
+    bar_top = panel_top + int(round(128 * scale))
+    bar_bottom = panel_bottom - int(round(18 * scale))
+    label_x = bar_right + int(round(22 * scale))
+    score_y = panel_top + (bar_top - panel_top) // 2 + int(round(4 * scale))
+
     cv2.putText(
         image,
         f"{metrics.total_score:,d}",
-        (title_x, panel_top + int(round(50 * scale))),
+        (title_x, score_y),
         cv2.FONT_HERSHEY_DUPLEX,
-        0.72 * scale,
+        1.26 * scale,
         level_color,
-        max(1, int(round(2 * scale))),
+        max(3, int(round(4 * scale))),
         cv2.LINE_AA,
     )
-
-    bar_left = panel_left + int(round(18 * scale))
-    bar_right = bar_left + max(12, int(round(18 * scale)))
-    bar_top = panel_top + int(round(70 * scale))
-    bar_bottom = panel_bottom - int(round(18 * scale))
-    label_x = bar_right + int(round(16 * scale))
 
     overlay = image.copy()
     for start_score, end_score, _, level in SCORE_BAR_SEGMENTS:
@@ -482,33 +483,22 @@ def draw_score_level_bar(image, metrics: PullUpMetrics, pullup_state: PullUpStat
             label,
             (label_x, label_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.36 * scale,
+            0.50 * scale,
             score_level_color(level),
-            1,
+            max(1, int(round(1.5 * scale))),
             cv2.LINE_AA,
         )
 
     cv2.putText(
         image,
-        "4000+",
+        "5000+",
         (bar_left - int(round(4 * scale)), bar_top - int(round(8 * scale))),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.32 * scale,
+        0.56 * scale,
         (144, 154, 172),
-        1,
+        max(1, int(round(2 * scale))),
         cv2.LINE_AA,
     )
-    cv2.putText(
-        image,
-        "0",
-        (bar_left - int(round(2 * scale)), bar_bottom + int(round(14 * scale))),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.32 * scale,
-        (144, 154, 172),
-        1,
-        cv2.LINE_AA,
-    )
-
     draw_score_gain_popup(
         image,
         pullup_state,
@@ -519,41 +509,43 @@ def draw_score_level_bar(image, metrics: PullUpMetrics, pullup_state: PullUpStat
     )
 
 
-def draw_peak_marker(image, metrics: PullUpMetrics, frame_shape) -> None:
-    if (
-        metrics.peak_shoulder_y is None or
-        metrics.best_height_score <= 0 or
-        metrics.peak_left_shoulder_x is None or
-        metrics.peak_left_wrist_x is None
-    ):
-        return
+def height_marker_bounds(metrics: PullUpMetrics, frame_shape) -> tuple[int, int] | None:
+    if metrics.peak_right_shoulder_x is None or metrics.peak_right_wrist_x is None:
+        return None
 
-    height, width = frame_shape[:2]
+    _, width = frame_shape[:2]
     scale = frame_ui_scale(frame_shape)
-    marker_y = int(round(metrics.peak_shoulder_y))
-    band_half_height = max(4, int(round(8 * scale)))
-    left_shoulder_x = float(metrics.peak_left_shoulder_x)
-    left_wrist_x = float(metrics.peak_left_wrist_x)
-    segment_center_x = int(round(left_shoulder_x + (left_wrist_x - left_shoulder_x) * 0.28))
-    arm_span = abs(left_wrist_x - left_shoulder_x)
-    segment_width = max(int(round(28 * scale)), int(round(arm_span * 0.41)))
+    right_shoulder_x = float(metrics.peak_right_shoulder_x)
+    right_wrist_x = float(metrics.peak_right_wrist_x)
+    segment_center_x = int(round(right_shoulder_x))
+    arm_span = abs(right_wrist_x - right_shoulder_x)
+    segment_width = max(int(round(30 * scale)), int(round(arm_span * 0.42)))
     half_width = max(18, segment_width // 2)
     marker_x1 = max(14, segment_center_x - half_width)
     marker_x2 = min(width - 14, segment_center_x + half_width)
-    label_y = max(24, marker_y - int(round(16 * scale)))
+    return marker_x1, marker_x2
+
+
+def draw_height_marker(image, *, marker_y: int, marker_x1: int, marker_x2: int, scale: float, label: str, fill_color, line_color, label_position: str = "above") -> None:
+    height = image.shape[0]
+    band_half_height = max(4, int(round(8 * scale)))
 
     overlay = image.copy()
     cv2.rectangle(
         overlay,
         (marker_x1, max(0, marker_y - band_half_height)),
         (marker_x2, min(height - 1, marker_y + band_half_height)),
-        (58, 58, 220),
+        fill_color,
         -1,
     )
     cv2.addWeighted(overlay, 0.20, image, 0.80, 0, image)
-    cv2.line(image, (marker_x1, marker_y), (marker_x2, marker_y), (70, 70, 235), max(2, int(round(3 * scale))), cv2.LINE_AA)
+    cv2.line(image, (marker_x1, marker_y), (marker_x2, marker_y), line_color, max(2, int(round(3 * scale))), cv2.LINE_AA)
 
-    label = "MAX HEIGHT"
+    if label_position == "below":
+        label_y = min(height - 12, marker_y + int(round(24 * scale)))
+    else:
+        label_y = max(24, marker_y - int(round(16 * scale)))
+
     cv2.putText(
         image,
         label,
@@ -566,14 +558,54 @@ def draw_peak_marker(image, metrics: PullUpMetrics, frame_shape) -> None:
     )
 
 
+def draw_peak_marker(image, metrics: PullUpMetrics, frame_shape) -> None:
+    marker_bounds = height_marker_bounds(metrics, frame_shape)
+    if marker_bounds is None:
+        return
+
+    if (
+        metrics.peak_shoulder_y is None or
+        metrics.best_height_score <= 0
+    ):
+        return
+
+    scale = frame_ui_scale(frame_shape)
+    marker_x1, marker_x2 = marker_bounds
+
+    if metrics.height_target_y is not None:
+        draw_height_marker(
+            image,
+            marker_y=int(round(metrics.height_target_y)),
+            marker_x1=marker_x1,
+            marker_x2=marker_x2,
+            scale=scale,
+            label="TARGET HEIGHT",
+            fill_color=(54, 126, 214),
+            line_color=(88, 184, 255),
+            label_position="below",
+        )
+
+    draw_height_marker(
+        image,
+        marker_y=int(round(metrics.peak_shoulder_y)),
+        marker_x1=marker_x1,
+        marker_x2=marker_x2,
+        scale=scale,
+        label="MAX HEIGHT",
+        fill_color=(58, 58, 220),
+        line_color=(70, 70, 235),
+    )
+
+
 def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pullup_state: PullUpState) -> None:
     height, width = frame_shape[:2]
     phase_color = PHASE_COLORS.get(metrics.state, PHASE_COLORS["Stand"])
     level_color = score_level_color(metrics.score_level)
     ui_scale = frame_ui_scale(frame_shape)
+    font_boost = 1.5
 
     margin = max(16, int(round(28 * ui_scale)))
-    panel_height = int(round(228 * ui_scale))
+    panel_height = int(round(296 * ui_scale))
     panel_left = margin
     panel_right = width - margin
     panel_top = int(round(height * 0.70))
@@ -596,9 +628,9 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
     cv2.putText(
         image,
         "PERFORMANCE",
-        (title_x, panel_top + int(round(38 * ui_scale))),
+        (title_x, panel_top + int(round(42 * ui_scale))),
         cv2.FONT_HERSHEY_DUPLEX,
-        0.82 * ui_scale,
+        0.82 * ui_scale * font_boost,
         (232, 236, 244),
         max(1, int(round(2 * ui_scale))),
         cv2.LINE_AA,
@@ -606,59 +638,63 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
     cv2.putText(
         image,
         session_label,
-        (title_x, panel_top + int(round(74 * ui_scale))),
+        (title_x, panel_top + int(round(92 * ui_scale))),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.56 * ui_scale,
+        0.56 * ui_scale * font_boost,
         (168, 180, 200),
         max(1, int(round(2 * ui_scale))),
         cv2.LINE_AA,
     )
 
     reps_x = title_x
-    reps_y = panel_bottom - int(round(24 * ui_scale))
-    reps_label_y = panel_bottom - int(round(108 * ui_scale))
+    reps_y = panel_bottom - int(round(46 * ui_scale))
+    reps_scale = 4.20 * ui_scale
+    reps_text = f"{metrics.count:2d}"
+    (reps_width, _), _ = cv2.getTextSize(reps_text, cv2.FONT_HERSHEY_DUPLEX, reps_scale, max(2, int(round(3 * ui_scale))))
     cv2.putText(
         image,
-        "REPS",
-        (reps_x, reps_label_y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.78 * ui_scale,
-        (128, 140, 161),
-        max(1, int(round(2 * ui_scale))),
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        image,
-        f"{metrics.count:2d}",
+        reps_text,
         (reps_x, reps_y),
         cv2.FONT_HERSHEY_DUPLEX,
-        3.40 * ui_scale,
+        reps_scale,
         (244, 247, 250),
         max(2, int(round(3 * ui_scale))),
         cv2.LINE_AA,
     )
+    cv2.putText(
+        image,
+        "REPS",
+        (reps_x + reps_width + int(round(18 * ui_scale)), reps_y - int(round(8 * ui_scale))),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.78 * ui_scale * font_boost,
+        (128, 140, 161),
+        max(1, int(round(2 * ui_scale))),
+        cv2.LINE_AA,
+    )
 
-    info_x = panel_left + int(round(panel_width * 0.34))
-    info_value_x = info_x + int(round(panel_width * 0.18))
-    row_height = int(round(28 * ui_scale))
-    average_height_text = "tracking" if metrics.average_height_score <= 0 else f"{metrics.average_height_score:>3d} pt"
-    best_height_text = "tracking" if metrics.best_height_score <= 0 else f"{metrics.best_height_score:>3d} pt"
+    info_x = panel_left + int(round(panel_width * 0.36))
+    info_value_x = panel_left + int(round(panel_width * 0.54))
+    row_height = int(round(56 * ui_scale))
     tempo_text = "--" if metrics.tempo_spm <= 0 else f"{metrics.tempo_spm:.1f} spm"
+    rep_score_value = metrics.last_rep_score
+    rep_result_color = rep_score_color(rep_score_value) if rep_score_value > 0 else (188, 198, 214)
+    rep_grade_text = rep_grade_label(rep_score_value) if rep_score_value > 0 else "TRACKING"
+    rep_score_text = "--" if rep_score_value <= 0 else f"{rep_score_value:d}"
 
     info_items = [
         ("Grip", metrics.grip, (234, 238, 244)),
         ("Tempo", tempo_text, (234, 238, 244)),
-        ("Avg Height", average_height_text, (234, 238, 244)),
-        ("Best Height", best_height_text, (234, 238, 244)),
+        ("Rep Grade", rep_grade_text, rep_result_color),
+        ("Rep Score", rep_score_text, rep_result_color),
     ]
     for index, (label, value, value_color) in enumerate(info_items):
-        base_y = panel_top + int(round(46 * ui_scale)) + index * row_height
+        base_y = panel_top + int(round(82 * ui_scale)) + index * row_height
         cv2.putText(
             image,
             label.upper(),
             (info_x, base_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.42 * ui_scale,
+            0.42 * ui_scale * font_boost,
             (126, 137, 156),
             max(1, int(round(1.5 * ui_scale))),
             cv2.LINE_AA,
@@ -668,13 +704,13 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
             value,
             (info_value_x, base_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.56 * ui_scale,
+            0.56 * ui_scale * font_boost,
             value_color,
             max(1, int(round(2 * ui_scale))),
             cv2.LINE_AA,
         )
 
-    divider_x = panel_left + int(round(panel_width * 0.62))
+    divider_x = panel_left + int(round(panel_width * 0.73))
     cv2.line(
         image,
         (divider_x, panel_top + int(round(26 * ui_scale))),
@@ -684,14 +720,14 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
         cv2.LINE_AA,
     )
 
-    score_block_x = divider_x + int(round(26 * ui_scale))
-    score_block_y = panel_top + int(round(44 * ui_scale))
+    score_block_x = divider_x + int(round(36 * ui_scale))
+    score_block_y = panel_top + int(round(54 * ui_scale))
     cv2.putText(
         image,
         "SCORE",
         (score_block_x, score_block_y),
         cv2.FONT_HERSHEY_DUPLEX,
-        0.44 * ui_scale,
+        0.44 * ui_scale * font_boost,
         (200, 210, 224),
         max(1, int(round(1.5 * ui_scale))),
         cv2.LINE_AA,
@@ -699,9 +735,9 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
     cv2.putText(
         image,
         f"{metrics.total_score:,d}",
-        (score_block_x, score_block_y + int(round(42 * ui_scale))),
+        (score_block_x, score_block_y + int(round(48 * ui_scale))),
         cv2.FONT_HERSHEY_DUPLEX,
-        1.18 * ui_scale,
+        1.18 * ui_scale * 1.35,
         level_color,
         max(2, int(round(3 * ui_scale))),
         cv2.LINE_AA,
@@ -709,9 +745,9 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
     cv2.putText(
         image,
         "LEVEL",
-        (score_block_x, score_block_y + int(round(74 * ui_scale))),
+        (score_block_x, score_block_y + int(round(102 * ui_scale))),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.42 * ui_scale,
+        0.42 * ui_scale * font_boost,
         (126, 137, 156),
         max(1, int(round(1.5 * ui_scale))),
         cv2.LINE_AA,
@@ -719,9 +755,9 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
     cv2.putText(
         image,
         score_level_label(metrics.score_level),
-        (score_block_x, score_block_y + int(round(102 * ui_scale))),
+        (score_block_x, score_block_y + int(round(142 * ui_scale))),
         cv2.FONT_HERSHEY_DUPLEX,
-        0.54 * ui_scale,
+        0.54 * ui_scale * font_boost,
         level_color,
         max(1, int(round(2 * ui_scale))),
         cv2.LINE_AA,
@@ -729,31 +765,32 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
 
     angle_label = "ANGLE"
     bar_height = max(10, int(round(14 * ui_scale)))
-    bar_y = panel_bottom - int(round(22 * ui_scale))
+    angle_bar_y = panel_bottom - int(round(48 * ui_scale))
     angle_block_left = score_block_x
     angle_block_right = panel_right - int(round(24 * ui_scale))
-    label_size, _ = cv2.getTextSize(angle_label, cv2.FONT_HERSHEY_SIMPLEX, 0.44 * ui_scale, max(1, int(round(1.5 * ui_scale))))
-    label_y = bar_y + bar_height - int(round(1 * ui_scale))
+
+    label_size, _ = cv2.getTextSize(angle_label, cv2.FONT_HERSHEY_SIMPLEX, 0.44 * ui_scale * font_boost, max(1, int(round(1.5 * ui_scale))))
+    label_y = angle_bar_y + bar_height - int(round(1 * ui_scale))
     cv2.putText(
         image,
         angle_label,
         (angle_block_left, label_y),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.44 * ui_scale,
+        0.44 * ui_scale * font_boost,
         (126, 137, 156),
         max(1, int(round(1.5 * ui_scale))),
         cv2.LINE_AA,
     )
 
     angle_value = f"{int(round(metrics.current_angle_score * 100)):>3d}"
-    value_size, _ = cv2.getTextSize(angle_value, cv2.FONT_HERSHEY_DUPLEX, 0.60 * ui_scale, max(1, int(round(2 * ui_scale))))
+    value_size, _ = cv2.getTextSize(angle_value, cv2.FONT_HERSHEY_DUPLEX, 0.60 * ui_scale * font_boost, max(1, int(round(2 * ui_scale))))
     value_y = label_y + int(round(1 * ui_scale))
     cv2.putText(
         image,
         angle_value,
         (angle_block_right - value_size[0], value_y),
         cv2.FONT_HERSHEY_DUPLEX,
-        0.60 * ui_scale,
+        0.60 * ui_scale * font_boost,
         (236, 242, 248),
         max(1, int(round(2 * ui_scale))),
         cv2.LINE_AA,
@@ -761,7 +798,7 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
 
     bar_x = angle_block_left + label_size[0] + int(round(14 * ui_scale))
     bar_width = max(40, angle_block_right - value_size[0] - int(round(12 * ui_scale)) - bar_x)
-    draw_metric_bar(image, (bar_x, bar_y), (bar_width, bar_height), metrics.current_angle_score, phase_color)
+    draw_metric_bar(image, (bar_x, angle_bar_y), (bar_width, bar_height), metrics.current_angle_score, phase_color)
 
 
 def draw_angle_badge(image, position, angle: float, scale: float) -> None:
@@ -797,12 +834,18 @@ def draw_angle_badge(image, position, angle: float, scale: float) -> None:
     text_origin = (text_x, text_y)
     cv2.putText(image, text, text_origin, font, font_scale, (242, 248, 252), thickness, cv2.LINE_AA)
 
-    degree_center = (
-        text_origin[0] + text_width + max(6, int(round(8 * scale))),
-        text_origin[1] - text_height + max(4, int(round(5 * scale))),
+    degree_x = text_origin[0] + text_width + max(5, int(round(6 * scale)))
+    degree_y = text_origin[1] - text_height + max(5, int(round(7 * scale)))
+    cv2.putText(
+        image,
+        "o",
+        (degree_x, degree_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.38 * scale,
+        (242, 248, 252),
+        max(1, int(round(2 * scale))),
+        cv2.LINE_AA,
     )
-    cv2.circle(image, degree_center, max(2, int(round(3 * scale))), (242, 248, 252), 1, cv2.LINE_AA)
-    cv2.circle(image, degree_center, max(3, int(round(5 * scale))), (110, 220, 255), 1, cv2.LINE_AA)
 
 
 def draw_center_state_overlay(image, state: str, frame_shape) -> None:
@@ -817,7 +860,8 @@ def draw_center_state_overlay(image, state: str, frame_shape) -> None:
     (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
 
     center_x = width // 2
-    center_y = int(height * 0.63)
+    hud_top = int(height * 0.70)
+    center_y = min(int(height * 0.67), hud_top - int(round(34 * scale)))
     pad_x = max(18, int(round(32 * scale)))
     pad_y = max(14, int(round(20 * scale)))
     x1 = center_x - text_width // 2 - pad_x
@@ -909,16 +953,17 @@ def render_pose_overlay(frame, results, pullup_state: PullUpState, session_label
 
     metrics = pullup_state.metrics()
     if pose is None:
+        draw_score_level_bar(overlay, metrics, pullup_state, frame.shape, title_banner=title_banner)
         draw_peak_marker(overlay, metrics, frame.shape)
         draw_hud(overlay, metrics, frame.shape, session_label, pullup_state)
         draw_center_state_overlay(overlay, metrics.state, frame.shape)
         output = cv2.addWeighted(overlay, 0.78, visual, 0.22, 0)
         overlay_title_banner(output, title_banner)
         draw_center_trajectories(output, pullup_state, frame.shape)
-        draw_score_level_bar(output, metrics, pullup_state, frame.shape, title_banner=title_banner)
         return output, metrics
 
     metrics = pullup_state.update(pose)
+    draw_score_level_bar(overlay, metrics, pullup_state, frame.shape, title_banner=title_banner)
 
     left_angle = pose.left_angle
     right_angle = pose.right_angle
@@ -995,5 +1040,4 @@ def render_pose_overlay(frame, results, pullup_state: PullUpState, session_label
     output = cv2.addWeighted(overlay, 0.78, visual, 0.22, 0)
     overlay_title_banner(output, title_banner)
     draw_center_trajectories(output, pullup_state, frame.shape)
-    draw_score_level_bar(output, metrics, pullup_state, frame.shape, title_banner=title_banner)
     return output, metrics
