@@ -60,6 +60,8 @@ SCORE_BAR_SEGMENTS = (
     (3000, 5000, "MASTER", SCORE_LEVEL_MASTER),
     (5000, SCORE_BAR_DISPLAY_MAX, "GOD", SCORE_LEVEL_GOD),
 )
+HUD_TOP_RATIO = 0.60
+STATE_OVERLAY_RATIO = 0.57
 
 
 def format_video_session_label(video_path: Path) -> str:
@@ -608,7 +610,7 @@ def draw_hud(image, metrics: PullUpMetrics, frame_shape, session_label: str, pul
     panel_height = int(round(296 * ui_scale))
     panel_left = margin
     panel_right = width - margin
-    panel_top = int(round(height * 0.70))
+    panel_top = int(round(height * HUD_TOP_RATIO))
     panel_bottom = min(height - margin, panel_top + panel_height)
     panel_top = max(margin, panel_bottom - panel_height)
     panel_width = panel_right - panel_left
@@ -860,8 +862,8 @@ def draw_center_state_overlay(image, state: str, frame_shape) -> None:
     (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
 
     center_x = width // 2
-    hud_top = int(height * 0.70)
-    center_y = min(int(height * 0.67), hud_top - int(round(34 * scale)))
+    hud_top = int(height * HUD_TOP_RATIO)
+    center_y = min(int(height * STATE_OVERLAY_RATIO), hud_top - int(round(34 * scale)))
     pad_x = max(18, int(round(32 * scale)))
     pad_y = max(14, int(round(20 * scale)))
     x1 = center_x - text_width // 2 - pad_x
