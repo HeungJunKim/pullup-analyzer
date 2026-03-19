@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Callable
 import urllib.request
 
 try:
@@ -176,6 +177,18 @@ def discover_input_videos(videos_dir: Path) -> list[Path]:
 
 def build_output_path(results_dir: Path, input_path: Path) -> Path:
     return results_dir / f"{input_path.stem}_result.mp4"
+
+
+def build_video_jobs(input_videos: list[Path], results_dir: Path) -> list[VideoJob]:
+    return [
+        VideoJob(
+            index=index,
+            total=len(input_videos),
+            input_path=input_path,
+            output_path=build_output_path(results_dir, input_path),
+        )
+        for index, input_path in enumerate(input_videos, start=1)
+    ]
 
 
 def build_temp_output_path(output_path: Path, tag: str) -> Path:
@@ -377,7 +390,23 @@ def merge_original_audio(
     return False
 
 
-def process_video(model, job: VideoJob, config: RuntimeConfig, reporter: ConsoleReporter) -> bool:
+def load_model(model_path: Path, reporter: ConsoleReporter):
+    reporter.info(f"모델을 불러오고 있습니다: {model_path.name}")
+    from ultralytics import YOLO
+
+    model = YOLO(str(model_path))
+    reporter.info("모델 준비가 끝났습니다. 영상 분석을 시작합니다.")
+    return model
+
+
+def process_video(
+    model,
+    job: VideoJob,
+    config: RuntimeConfig,
+    reporter: ConsoleReporter,
+    *,
+    frame_callback: Callable | None = None,
+) -> bool:
     import cv2
 
     from .rendering import format_video_session_label, prepare_title_banner, render_pose_overlay
@@ -473,12 +502,28 @@ def process_video(model, job: VideoJob, config: RuntimeConfig, reporter: Console
                     raise
 
             annotated_frame, metrics = render_pose_overlay(frame, results, state, session_label, title_banner)
+            if frame_callback is not None:
+                frame_callback(
+                    annotated_frame,
+                    metrics=metrics,
+                    frame_index=processed_frames + 1,
+                    job=job,
+                    metadata=metadata,
+                )
             writer.write(annotated_frame)
             last_output_frame = annotated_frame.copy()
             processed_frames += 1
             progress.advance(metrics)
 
         if last_output_frame is not None:
+            if frame_callback is not None:
+                frame_callback(
+                    last_output_frame,
+                    metrics=metrics,
+                    frame_index=processed_frames,
+                    job=job,
+                    metadata=metadata,
+                )
             hold_frame_count = max(1, int(round(metadata.fps * FINAL_FRAME_HOLD_SECONDS)))
             for _ in range(hold_frame_count):
                 writer.write(last_output_frame)
@@ -514,15 +559,49 @@ def process_video(model, job: VideoJob, config: RuntimeConfig, reporter: Console
     return True
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_argument_parser().parse_args(argv)
-    config = build_runtime_config(args)
-    reporter = ConsoleReporter(APP_INFO)
+def run_analysis(
+    config: RuntimeConfig,
+    reporter: ConsoleReporter,
+    input_videos: list[Path],
+    *,
+    frame_callback: Callable | None = None,
+) -> tuple[int, int]:
     _, device_note = resolve_inference_device()
 
     ensure_directory(config.directories.models_dir)
     ensure_directory(config.directories.videos_dir)
     ensure_directory(config.directories.results_dir)
+
+    model_path = resolve_model_path(config.directories.models_dir, reporter, config.requested_model)
+    reporter.session_overview(
+        project_dir=config.directories.project_dir,
+        model_name=model_path.name,
+        device=config.inference.device,
+        video_count=len(input_videos),
+        results_dir=config.directories.results_dir,
+    )
+    reporter.info(f"장치 확인 결과: {device_note}")
+    model = load_model(model_path, reporter)
+
+    jobs = build_video_jobs(input_videos, config.directories.results_dir)
+    success_count = 0
+    started_at = time.perf_counter()
+    for job in jobs:
+        if process_video(model, job, config, reporter, frame_callback=frame_callback):
+            success_count += 1
+
+    reporter.batch_finished(
+        success_count=success_count,
+        total_count=len(jobs),
+        elapsed_seconds=time.perf_counter() - started_at,
+    )
+    return success_count, len(jobs)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_argument_parser().parse_args(argv)
+    config = build_runtime_config(args)
+    reporter = ConsoleReporter(APP_INFO)
 
     reporter.banner()
 
@@ -532,47 +611,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        model_path = resolve_model_path(config.directories.models_dir, reporter, config.requested_model)
+        success_count, total_count = run_analysis(config, reporter, input_videos)
     except Exception as exc:
-        reporter.error(f"모델 준비 중 문제가 생겼습니다: {exc}")
+        reporter.error(f"분석 중 문제가 생겼습니다: {exc}")
         return 1
 
-    reporter.session_overview(
-        project_dir=config.directories.project_dir,
-        model_name=model_path.name,
-        device=config.inference.device,
-        video_count=len(input_videos),
-        results_dir=config.directories.results_dir,
-    )
-    reporter.info(f"장치 확인 결과: {device_note}")
-    reporter.info(f"모델을 불러오고 있습니다: {model_path.name}")
-    from ultralytics import YOLO
-
-    model = YOLO(str(model_path))
-    reporter.info("모델 준비가 끝났습니다. 영상 분석을 시작합니다.")
-
-    jobs = [
-        VideoJob(
-            index=index,
-            total=len(input_videos),
-            input_path=input_path,
-            output_path=build_output_path(config.directories.results_dir, input_path),
-        )
-        for index, input_path in enumerate(input_videos, start=1)
-    ]
-
-    success_count = 0
-    started_at = time.perf_counter()
-    for job in jobs:
-        if process_video(model, job, config, reporter):
-            success_count += 1
-
-    reporter.batch_finished(
-        success_count=success_count,
-        total_count=len(jobs),
-        elapsed_seconds=time.perf_counter() - started_at,
-    )
-    return 0 if success_count == len(jobs) else 1
+    return 0 if success_count == total_count else 1
 
 
 if __name__ == "__main__":

@@ -94,17 +94,24 @@ sudo apt install -y ffmpeg
 
 ## 실행 방법
 
-기본 실행:
+콘솔 실행:
 
 ```bash
-python demo.py
+python console.py
+```
+
+GUI 실행:
+
+```bash
+python app.py
 ```
 
 ## 폴더 구조
 
 ```text
 pullup-analyzer/
-├── demo.py
+├── app.py
+├── console.py
 ├── requirements.txt
 ├── LICENSE
 ├── README.md
@@ -148,7 +155,8 @@ pullup-analyzer/
 
 ## 참고 사항
 
-- 현재는 `videos/` 폴더의 `.mp4` 파일만 처리합니다.
+- `console.py`는 `videos/` 폴더의 `.mp4` 파일을 순서대로 처리합니다.
+- `app.py`는 개별 동영상 또는 폴더를 직접 선택해서 실시간 시각화와 함께 분석할 수 있습니다.
 - 결과 파일명은 기본적으로 `<원본파일명>_result.mp4` 형식입니다.
 - 콘솔은 스크롤이 과하게 밀리지 않도록 진행률 바와 상태줄 중심으로 출력합니다.
 - 타이틀 이미지는 `resource/` 폴더의 파일을 사용합니다.
