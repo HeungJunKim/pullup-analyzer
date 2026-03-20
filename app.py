@@ -4,6 +4,7 @@ import ctypes
 import queue
 import sys
 import threading
+import traceback
 from pathlib import Path
 import tkinter as tk
 from tkinter import font as tkfont
@@ -15,13 +16,16 @@ from PIL import Image, ImageOps, ImageTk
 from pullup_analyzer.analyzer import (
     APP_INFO,
     DEFAULT_MODEL_NAME,
+    DEFAULT_MODELS_DIR,
+    DEFAULT_RESULTS_DIR,
+    DEFAULT_VIDEOS_DIR,
     PROJECT_DIR,
     SUPPORTED_POSE_MODELS,
     DirectoryLayout,
     InferenceSettings,
     RuntimeConfig,
     ensure_directory,
-    resolve_inference_device,
+    resolve_inference_device_with_policy,
     resolve_title_image_path,
     run_analysis,
 )
@@ -108,6 +112,21 @@ def format_gui_status(metrics) -> str:
         f"레벨 {snapshot['level']}",
     ]
     return ", ".join(parts)
+
+
+def format_analysis_error(exc: Exception) -> str:
+    if isinstance(exc, ModuleNotFoundError):
+        missing_name = exc.name or str(exc)
+        if missing_name == "ultralytics":
+            return "분석 엔진(ultralytics)이 EXE에 포함되지 않았습니다. 빌드 환경에 ultralytics를 설치한 뒤 다시 패키징해 주세요."
+        if missing_name == "torch":
+            return "추론 런타임(torch)이 EXE에 포함되지 않았습니다. CPU용 torch를 설치한 뒤 다시 패키징해 주세요."
+        return f"필수 모듈을 찾지 못했습니다: {missing_name}"
+
+    message = str(exc).strip()
+    if not message:
+        message = traceback.format_exception_only(type(exc), exc)[-1].strip()
+    return f"{type(exc).__name__}: {message}"
 
 
 class GuiProgress:
@@ -244,7 +263,7 @@ class PullUpAnalyzerApp:
         self.root.minsize(1280, 760)
 
         self.selected_videos: list[Path] = []
-        self.output_dir = (PROJECT_DIR / "results").resolve()
+        self.output_dir = DEFAULT_RESULTS_DIR.resolve()
         self.cancel_event = threading.Event()
         self.event_queue: queue.Queue = queue.Queue()
         self.frame_queue: queue.Queue = queue.Queue(maxsize=1)
@@ -273,6 +292,7 @@ class PullUpAnalyzerApp:
         self.live_evaluation_var = tk.StringVar(value="트래킹 대기")
         self.live_level_var = tk.StringVar(value="입문")
         self.live_value_labels: dict[str, tk.Label] = {}
+        self.last_error_text: str | None = None
 
         self._build_ui()
         self._load_header_title()
@@ -922,7 +942,7 @@ class PullUpAnalyzerApp:
         self.header_image_label.configure(image=self.header_image)
 
     def _refresh_device_label(self) -> None:
-        device, note = resolve_inference_device()
+        device, note = resolve_inference_device_with_policy(allow_gpu=False)
         self.device_var.set(f"{humanize_device(device)} | {note}")
 
     def _set_running_state(self, running: bool) -> None:
@@ -996,6 +1016,7 @@ class PullUpAnalyzerApp:
         ensure_directory(output_dir)
         self.output_dir = output_dir
         self.current_progress_var.set(0.0)
+        self.last_error_text = None
         self.current_progress_text_var.set("모델과 입력 영상을 준비 중입니다.")
         self.status_text_var.set("모델을 불러오고 첫 영상을 준비하고 있습니다.")
         self._reset_live_metrics(status_text="준비 중", status_tone="running")
@@ -1027,12 +1048,12 @@ class PullUpAnalyzerApp:
     def _run_analysis_worker(self, input_videos: list[Path], output_dir: Path, model_name: str) -> None:
         reporter = GuiReporter(self.event_queue)
         try:
-            device, device_note = resolve_inference_device()
+            device, device_note = resolve_inference_device_with_policy(allow_gpu=False)
             config = RuntimeConfig(
                 directories=DirectoryLayout(
                     project_dir=PROJECT_DIR,
-                    models_dir=(PROJECT_DIR / "models").resolve(),
-                    videos_dir=(PROJECT_DIR / "videos").resolve(),
+                    models_dir=DEFAULT_MODELS_DIR.resolve(),
+                    videos_dir=DEFAULT_VIDEOS_DIR.resolve(),
                     results_dir=output_dir,
                 ),
                 inference=InferenceSettings(
@@ -1061,7 +1082,7 @@ class PullUpAnalyzerApp:
                 }
             )
         except Exception as exc:
-            self.event_queue.put({"type": "error", "text": str(exc)})
+            self.event_queue.put({"type": "error", "text": format_analysis_error(exc)})
             self.event_queue.put(
                 {
                     "type": "done",
@@ -1191,6 +1212,7 @@ class PullUpAnalyzerApp:
             return
 
         if event_type == "error":
+            self.last_error_text = event["text"]
             self._append_log(f"[오류] {event['text']}")
             self.status_text_var.set(event["text"])
             self._set_live_status("오류", tone="error")
@@ -1209,9 +1231,12 @@ class PullUpAnalyzerApp:
                 self._set_live_status("완료", tone="done")
                 self.summary_var.set("결과 영상 저장이 끝났습니다.")
             else:
-                self.status_text_var.set("일부 영상 분석에 실패했습니다.")
+                error_text = self.last_error_text or "일부 영상 분석에 실패했습니다."
+                self.status_text_var.set(error_text)
                 self._set_live_status("실패", tone="error")
-                self.summary_var.set("오류가 발생한 영상이 있습니다. 상태 메시지를 확인해 주세요.")
+                self.summary_var.set(error_text)
+                if self.last_error_text:
+                    messagebox.showerror("분석 오류", error_text)
             return
 
     def _update_preview(self, event: dict) -> None:

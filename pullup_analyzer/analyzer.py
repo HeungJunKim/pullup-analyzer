@@ -5,22 +5,22 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import time
 from typing import Callable
 import urllib.request
 
-try:
-    import av
-except ImportError:
-    av = None
+from .runtime import get_bundle_dir, get_user_data_dir, resolve_binary
 
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-ULTRALYTICS_CONFIG_DIR = PROJECT_DIR / ".ultralytics"
-ULTRALYTICS_CONFIG_DIR.mkdir(exist_ok=True)
+PROJECT_DIR = get_bundle_dir()
+USER_DATA_DIR = get_user_data_dir()
+DEFAULT_MODELS_DIR = USER_DATA_DIR / "models"
+DEFAULT_VIDEOS_DIR = USER_DATA_DIR / "videos"
+DEFAULT_RESULTS_DIR = USER_DATA_DIR / "results"
+ULTRALYTICS_CONFIG_DIR = USER_DATA_DIR / ".ultralytics"
+ULTRALYTICS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("YOLO_CONFIG_DIR", str(ULTRALYTICS_CONFIG_DIR))
 
 from .console import AppInfo, ConsoleReporter, VideoMetadata
@@ -96,7 +96,27 @@ def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def hidden_subprocess_kwargs() -> dict[str, object]:
+    if sys.platform != "win32":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
+
+
 def resolve_inference_device() -> tuple[str, str]:
+    return resolve_inference_device_with_policy(allow_gpu=True)
+
+
+def resolve_inference_device_with_policy(*, allow_gpu: bool) -> tuple[str, str]:
+    if not allow_gpu:
+        return "cpu", "CPU-only runtime selected"
+
     try:
         import torch
 
@@ -110,6 +130,7 @@ def resolve_inference_device() -> tuple[str, str]:
                 check=False,
                 capture_output=True,
                 text=True,
+                **hidden_subprocess_kwargs(),
             )
             if result.returncode == 0 and "GPU 0:" in result.stdout:
                 first_line = result.stdout.strip().splitlines()[0]
@@ -121,9 +142,9 @@ def resolve_inference_device() -> tuple[str, str]:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze pull-up videos with YOLO pose estimation.")
-    parser.add_argument("--models-dir", default=str(PROJECT_DIR / "models"))
-    parser.add_argument("--videos-dir", default=str(PROJECT_DIR / "videos"))
-    parser.add_argument("--results-dir", default=str(PROJECT_DIR / "results"))
+    parser.add_argument("--models-dir", default=str(DEFAULT_MODELS_DIR))
+    parser.add_argument("--videos-dir", default=str(DEFAULT_VIDEOS_DIR))
+    parser.add_argument("--results-dir", default=str(DEFAULT_RESULTS_DIR))
     parser.add_argument("--model-name", default=os.environ.get("PULLUP_MODEL_NAME"))
     parser.add_argument("--conf", type=float, default=float(os.environ.get("PULLUP_CONF", "0.55")))
     parser.add_argument("--iou", type=float, default=float(os.environ.get("PULLUP_IOU", "0.50")))
@@ -216,7 +237,7 @@ def build_temp_output_path(output_path: Path, tag: str) -> Path:
 
 
 def resolve_system_binary(name: str) -> str | None:
-    return shutil.which(name)
+    return resolve_binary(name)
 
 
 class FFmpegVideoWriter:
@@ -261,6 +282,7 @@ class FFmpegVideoWriter:
             ],
             stdin=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **hidden_subprocess_kwargs(),
         )
 
     def isOpened(self) -> bool:
@@ -362,6 +384,7 @@ def merge_original_audio(
             check=False,
             capture_output=True,
             text=True,
+            **hidden_subprocess_kwargs(),
         )
         has_audio = bool(probe.stdout.strip())
         if not has_audio:
@@ -393,6 +416,7 @@ def merge_original_audio(
             check=False,
             capture_output=True,
             text=True,
+            **hidden_subprocess_kwargs(),
         )
         if mux.returncode == 0:
             os.replace(temp_output_path, output_video_path)

@@ -13,3 +13,10 @@ models/*
 !models/.gitkeep
 
 *.pt
+build/
+dist/
+build-*/
+dist-*/
+.venv*/
+PullUpAnalyzer.spec
+scripts/build_windows_exe.ps1
