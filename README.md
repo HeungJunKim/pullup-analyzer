@@ -65,6 +65,19 @@
 - `console.py` 배치 실행과 진행률 표시 지원
 - 결과 영상 저장 후 원본 오디오 재병합
 
+## 다운로드
+
+Windows x64 실행 파일:
+
+- [PullUpAnalyzer-win-x64-v1.2.0.zip](https://github.com/HeungJunKim/pullup-analyzer/releases/download/v1.2.0/PullUpAnalyzer-win-x64-v1.2.0.zip)
+
+안내:
+
+- Python 설치 없이 바로 실행할 수 있습니다.
+- CPU 전용 데스크톱 빌드입니다.
+- 첫 실행 시 포즈 모델은 `%LOCALAPPDATA%\PullUpAnalyzer\models` 경로로 자동 다운로드됩니다.
+- 결과 파일은 기본적으로 `%LOCALAPPDATA%\PullUpAnalyzer\results` 아래에 저장되며, GUI에서 다른 폴더로 변경할 수 있습니다.
+
 ## 설치
 
 ### 권장 환경
@@ -171,56 +184,4 @@ pullup-analyzer/
 
 - Ultralytics Pose Task Docs: https://docs.ultralytics.com/tasks/pose/
 - Ultralytics GitHub: https://github.com/ultralytics/ultralytics
-
-## Windows EXE 배포
-
-- EXE 엔트리 포인트는 `app.py`입니다.
-- 배포용 GUI는 CPU only 기준으로 동작하도록 맞춰져 있습니다.
-- 모델 파일은 EXE에 포함하지 않아도 됩니다. 첫 실행 후 `%LOCALAPPDATA%\PullUpAnalyzer\models` 아래에 저장되도록 구성했습니다.
-- 결과 기본 폴더도 `%LOCALAPPDATA%\PullUpAnalyzer\results` 기준으로 잡히며, GUI에서 다른 폴더로 바꿀 수 있습니다.
-- FFmpeg 바이너리는 번들 내부의 `ffmpeg/ffmpeg.exe`, `ffmpeg/ffprobe.exe`를 우선 탐색합니다.
-
-### 빌드 준비
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install pyinstaller
-```
-
-### 빌드 실행
-
-기본 FFmpeg 경로가 `D:\dev\ffmpeg-master-latest-win64-gpl`라면:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
-```
-
-다른 경로를 쓰려면:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1 -FfmpegRoot "D:\path\to\ffmpeg"
-```
-
-빌드가 끝나면 `dist\PullUpAnalyzer` 폴더를 그대로 배포하면 됩니다.
-
-### FFmpeg 라이선스 메모
-
-- 현재 로컬 FFmpeg 바이너리는 `LICENSE.txt` 기준 GPLv3 문서를 포함하고 있습니다.
-- 이 프로젝트는 AGPLv3이므로 GPLv3 FFmpeg를 함께 배포하는 방향 자체는 일반적으로 맞습니다.
-- 다만 FFmpeg GPL 바이너리를 재배포할 때는 라이선스 문서만 넣는 것으로 끝내지 말고, 해당 바이너리에 대한 대응 소스 제공 의무도 함께 충족해야 합니다.
-- 배포물에는 FFmpeg 라이선스 문서를 함께 포함하고, 수령자가 동일한 FFmpeg 대응 소스를 받을 수 있도록 별도 제공 경로를 준비하는 것을 권장합니다.
-
-## Release Download
-
-Windows x64 executable:
-
-- [PullUpAnalyzer-win-x64-v1.2.0.zip](https://github.com/HeungJunKim/pullup-analyzer/releases/download/v1.2.0/PullUpAnalyzer-win-x64-v1.2.0.zip)
-
-Notes:
-
-- No Python installation is required.
-- This is a CPU-only desktop build.
-- On first run, the pose model is downloaded to `%LOCALAPPDATA%\PullUpAnalyzer\models`.
-- Results are stored under `%LOCALAPPDATA%\PullUpAnalyzer\results` by default unless changed in the GUI.
 
