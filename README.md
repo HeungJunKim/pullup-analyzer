@@ -210,3 +210,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1 -Ffmpeg
 - 이 프로젝트는 AGPLv3이므로 GPLv3 FFmpeg를 함께 배포하는 방향 자체는 일반적으로 맞습니다.
 - 다만 FFmpeg GPL 바이너리를 재배포할 때는 라이선스 문서만 넣는 것으로 끝내지 말고, 해당 바이너리에 대한 대응 소스 제공 의무도 함께 충족해야 합니다.
 - 배포물에는 FFmpeg 라이선스 문서를 함께 포함하고, 수령자가 동일한 FFmpeg 대응 소스를 받을 수 있도록 별도 제공 경로를 준비하는 것을 권장합니다.
+
+## Release Download
+
+Windows x64 executable:
+
+- [PullUpAnalyzer-win-x64-v1.2.0.zip](https://github.com/HeungJunKim/pullup-analyzer/releases/download/v1.2.0/PullUpAnalyzer-win-x64-v1.2.0.zip)
+
+Notes:
+
+- No Python installation is required.
+- This is a CPU-only desktop build.
+- On first run, the pose model is downloaded to `%LOCALAPPDATA%\PullUpAnalyzer\models`.
+- Results are stored under `%LOCALAPPDATA%\PullUpAnalyzer\results` by default unless changed in the GUI.
+
