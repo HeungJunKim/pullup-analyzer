@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="resource/demo.gif" alt="Pull-Up Analyzer Demo" width="360">
+  <img src="resource/app.png" alt="Pull-Up Analyzer GUI" width="900">
 </p>
 
 <p align="center">
@@ -55,12 +55,14 @@
 
 - `.mp4` 풀업 영상을 자동 분석
 - YOLO pose 모델 기반 사람 자세 추정
+- `app.py` GUI에서 개별 동영상 또는 폴더를 직접 선택해 분석
+- GUI에서 실시간 시각화, 상태 패널, 진행률 확인
 - 풀업 반복 횟수 자동 카운트
 - `PULL UP`, `PULL DOWN`, `DEAD HANG` 상태 시각화
 - 팔 각도, 스켈레톤, 최고 높이, 기준 높이 오버레이
 - 회차별 획득 점수와 누적 점수 계산
 - 레벨 구간 표시
-- 콘솔 진행률 표시 및 실시간 상태 요약
+- `console.py` 배치 실행과 진행률 표시 지원
 - 결과 영상 저장 후 원본 오디오 재병합
 
 ## 설치
@@ -106,6 +108,10 @@ GUI 실행:
 python app.py
 ```
 
+GUI에서는 영상 선택, 결과 폴더 설정, 모델 선택, 실시간 시각화 확인이 가능합니다.
+
+지원 포즈 모델: `yolo26s-pose.pt`, `yolo26m-pose.pt`, `yolo26l-pose.pt`, `yolo26x-pose.pt`
+
 ## 폴더 구조
 
 ```text
@@ -133,7 +139,7 @@ pullup-analyzer/
 - `models/`: YOLO pose 모델 파일 보관
 - `videos/`: 입력 영상 보관
 - `results/`: 분석 결과 영상 저장
-- `resource/`: 타이틀 이미지 등 리소스 보관
+- `resource/`: 타이틀 이미지, GUI 캡처(`app.png`), 데모 영상 보관
 
 ## 점수 체계
 
@@ -156,10 +162,10 @@ pullup-analyzer/
 ## 참고 사항
 
 - `console.py`는 `videos/` 폴더의 `.mp4` 파일을 순서대로 처리합니다.
-- `app.py`는 개별 동영상 또는 폴더를 직접 선택해서 실시간 시각화와 함께 분석할 수 있습니다.
+- `app.py`는 데스크톱 GUI로 개별 동영상 또는 폴더를 직접 선택해서 실시간 시각화와 함께 분석할 수 있습니다.
 - 결과 파일명은 기본적으로 `<원본파일명>_result.mp4` 형식입니다.
 - 콘솔은 스크롤이 과하게 밀리지 않도록 진행률 바와 상태줄 중심으로 출력합니다.
-- 타이틀 이미지는 `resource/` 폴더의 파일을 사용합니다.
+- README 상단 이미지는 `resource/app.png`, 타이틀 이미지는 `resource/tilte.png`를 사용합니다.
 
 ## 레퍼런스
 

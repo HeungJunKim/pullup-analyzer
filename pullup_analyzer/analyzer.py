@@ -29,12 +29,12 @@ from .console import AppInfo, ConsoleReporter, VideoMetadata
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
 SUPPORTED_POSE_MODELS = (
-    "yolo26n-pose.pt",
     "yolo26s-pose.pt",
     "yolo26m-pose.pt",
     "yolo26l-pose.pt",
     "yolo26x-pose.pt",
 )
+REMOVED_POSE_MODELS = ("yolo26n-pose.pt",)
 MODEL_DOWNLOAD_BASE_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
 DEFAULT_MODEL_NAME = "yolo26m-pose.pt"
 FINAL_FRAME_HOLD_SECONDS = 3.0
@@ -160,11 +160,20 @@ def resolve_model_path(models_dir: Path, reporter: ConsoleReporter, requested_mo
         requested_path = Path(requested_model)
         if requested_path.exists():
             resolved = requested_path.resolve()
+            if resolved.name in REMOVED_POSE_MODELS:
+                removed = ", ".join(REMOVED_POSE_MODELS)
+                supported = ", ".join(SUPPORTED_POSE_MODELS)
+                raise ValueError(f"unsupported model '{resolved.name}'. Removed: {removed}. Supported models: {supported}")
             reporter.info(f"직접 지정한 모델을 사용합니다: {resolved}")
             return resolved
         candidate_name = requested_path.name
     else:
         candidate_name = DEFAULT_MODEL_NAME
+
+    if candidate_name in REMOVED_POSE_MODELS:
+        removed = ", ".join(REMOVED_POSE_MODELS)
+        supported = ", ".join(SUPPORTED_POSE_MODELS)
+        raise ValueError(f"unsupported model '{candidate_name}'. Removed: {removed}. Supported models: {supported}")
 
     if candidate_name not in SUPPORTED_POSE_MODELS:
         supported = ", ".join(SUPPORTED_POSE_MODELS)
