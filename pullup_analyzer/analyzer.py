@@ -81,6 +81,17 @@ class VideoJob:
     output_path: Path
 
 
+@dataclass(frozen=True)
+class AnalysisRunResult:
+    success_count: int
+    total_count: int
+    cancelled: bool = False
+
+
+class AnalysisCancelled(RuntimeError):
+    pass
+
+
 def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -406,6 +417,7 @@ def process_video(
     reporter: ConsoleReporter,
     *,
     frame_callback: Callable | None = None,
+    stop_callback: Callable[[], bool] | None = None,
 ) -> bool:
     import cv2
 
@@ -417,6 +429,7 @@ def process_video(
     writer = None
     progress = None
     release_error = None
+    cancelled = False
 
     if not capture.isOpened():
         reporter.error(f"입력 영상을 열지 못했습니다: {job.input_path}")
@@ -470,6 +483,9 @@ def process_video(
         last_output_frame = None
 
         while True:
+            if stop_callback is not None and stop_callback():
+                raise AnalysisCancelled("사용자가 분석 중단을 요청했습니다.")
+
             has_frame, frame = capture.read()
             if not has_frame:
                 break
@@ -526,8 +542,13 @@ def process_video(
                 )
             hold_frame_count = max(1, int(round(metadata.fps * FINAL_FRAME_HOLD_SECONDS)))
             for _ in range(hold_frame_count):
+                if stop_callback is not None and stop_callback():
+                    raise AnalysisCancelled("사용자가 분석 중단을 요청했습니다.")
                 writer.write(last_output_frame)
 
+    except AnalysisCancelled as exc:
+        reporter.warn(str(exc))
+        cancelled = True
     except Exception as exc:
         if temp_output_path.exists():
             temp_output_path.unlink()
@@ -549,6 +570,10 @@ def process_video(
         temp_output_path.unlink(missing_ok=True)
         return False
 
+    if cancelled:
+        temp_output_path.unlink(missing_ok=True)
+        return False
+
     audio_merged = merge_original_audio(temp_output_path, job.input_path, job.output_path, reporter)
     reporter.video_finished(
         output_path=job.output_path,
@@ -565,7 +590,8 @@ def run_analysis(
     input_videos: list[Path],
     *,
     frame_callback: Callable | None = None,
-) -> tuple[int, int]:
+    stop_callback: Callable[[], bool] | None = None,
+) -> AnalysisRunResult:
     _, device_note = resolve_inference_device()
 
     ensure_directory(config.directories.models_dir)
@@ -586,16 +612,28 @@ def run_analysis(
     jobs = build_video_jobs(input_videos, config.directories.results_dir)
     success_count = 0
     started_at = time.perf_counter()
+    cancelled = False
     for job in jobs:
-        if process_video(model, job, config, reporter, frame_callback=frame_callback):
+        if stop_callback is not None and stop_callback():
+            cancelled = True
+            reporter.warn("분석이 사용자 요청으로 중단됐습니다.")
+            break
+        if process_video(model, job, config, reporter, frame_callback=frame_callback, stop_callback=stop_callback):
             success_count += 1
+        elif stop_callback is not None and stop_callback():
+            cancelled = True
+            break
 
     reporter.batch_finished(
         success_count=success_count,
         total_count=len(jobs),
         elapsed_seconds=time.perf_counter() - started_at,
     )
-    return success_count, len(jobs)
+    return AnalysisRunResult(
+        success_count=success_count,
+        total_count=len(jobs),
+        cancelled=cancelled,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -611,12 +649,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        success_count, total_count = run_analysis(config, reporter, input_videos)
+        result = run_analysis(config, reporter, input_videos)
     except Exception as exc:
         reporter.error(f"분석 중 문제가 생겼습니다: {exc}")
         return 1
 
-    return 0 if success_count == total_count else 1
+    return 0 if result.success_count == result.total_count and not result.cancelled else 1
 
 
 if __name__ == "__main__":

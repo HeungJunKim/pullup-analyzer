@@ -12,12 +12,15 @@ from PIL import Image, ImageTk
 
 from pullup_analyzer.analyzer import (
     APP_INFO,
+    DEFAULT_MODEL_NAME,
     PROJECT_DIR,
+    SUPPORTED_POSE_MODELS,
     DirectoryLayout,
     InferenceSettings,
     RuntimeConfig,
     ensure_directory,
     resolve_inference_device,
+    resolve_title_image_path,
     run_analysis,
 )
 from pullup_analyzer.console import (
@@ -32,11 +35,23 @@ from pullup_analyzer.console import (
 
 
 VIDEO_FILETYPES = (("MP4 videos", "*.mp4"), ("All files", "*.*"))
+APP_BG = "#0f172a"
+PANEL_BG = "#111827"
+CARD_BG = "#162033"
+TEXT_MAIN = "#e5edf7"
+TEXT_SUB = "#8fa2bf"
+ACCENT = "#38bdf8"
+ACCENT_2 = "#7dd3fc"
+SUCCESS = "#34d399"
+WARN = "#fbbf24"
+ERROR = "#fb7185"
 
 
 class GuiProgress:
-    def __init__(self, event_queue: queue.Queue, label: str, total_frames: int) -> None:
+    def __init__(self, event_queue: queue.Queue, *, index: int, total_jobs: int, label: str, total_frames: int) -> None:
         self._event_queue = event_queue
+        self._index = index
+        self._total_jobs = total_jobs
         self._label = label
         self._total_frames = total_frames
         self._current_frame = 0
@@ -46,6 +61,8 @@ class GuiProgress:
         self._event_queue.put(
             {
                 "type": "progress",
+                "job_index": self._index,
+                "job_total": self._total_jobs,
                 "label": self._label,
                 "current": self._current_frame,
                 "total": self._total_frames,
@@ -137,6 +154,8 @@ class GuiReporter:
     def open_progress(self, *, index: int, total: int, input_path: Path, total_frames: int) -> GuiProgress:
         return GuiProgress(
             self._event_queue,
+            index=index,
+            total_jobs=total,
             label=f"영상 {index}/{total} | {input_path.stem}",
             total_frames=total_frames,
         )
@@ -146,64 +165,108 @@ class PullUpAnalyzerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(f"{APP_INFO.name} GUI")
-        self.root.geometry("1460x920")
-        self.root.minsize(1200, 760)
+        self.root.configure(bg=APP_BG)
+
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = min(1320, max(1080, screen_width - 120))
+        window_height = min(860, max(700, screen_height - 120))
+        self.root.geometry(f"{window_width}x{window_height}")
+        self.root.minsize(1024, 680)
 
         self.selected_videos: list[Path] = []
         self.output_dir = (PROJECT_DIR / "results").resolve()
+        self.cancel_event = threading.Event()
         self.event_queue: queue.Queue = queue.Queue()
         self.frame_queue: queue.Queue = queue.Queue(maxsize=1)
         self.worker: threading.Thread | None = None
         self.preview_image = None
+        self.header_image = None
 
         self.output_dir_var = tk.StringVar(value=str(self.output_dir))
+        self.model_name_var = tk.StringVar(value=DEFAULT_MODEL_NAME)
         self.selection_var = tk.StringVar(value="선택된 영상이 없습니다.")
+        self.device_var = tk.StringVar(value="장치 확인 전")
         self.current_video_var = tk.StringVar(value="대기 중")
-        self.progress_var = tk.DoubleVar(value=0.0)
-        self.progress_text_var = tk.StringVar(value="분석 준비 전")
-        self.status_text_var = tk.StringVar(value="진행 상태가 여기에 표시됩니다.")
+        self.current_progress_text_var = tk.StringVar(value="현재 영상 진행률이 여기에 표시됩니다.")
+        self.overall_progress_text_var = tk.StringVar(value="전체 진행률이 여기에 표시됩니다.")
+        self.status_text_var = tk.StringVar(value="분석 상태가 여기에 표시됩니다.")
+        self.summary_var = tk.StringVar(value="영상 또는 폴더를 선택한 뒤 분석을 시작해 주세요.")
+        self.current_progress_var = tk.DoubleVar(value=0.0)
+        self.overall_progress_var = tk.DoubleVar(value=0.0)
 
         self._build_ui()
+        self._load_header_title()
+        self._refresh_device_label()
         self._poll_queues()
 
     def _build_ui(self) -> None:
-        self.root.columnconfigure(1, weight=1)
-        self.root.rowconfigure(0, weight=1)
-
         style = ttk.Style()
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
 
-        controls = ttk.Frame(self.root, padding=16)
-        controls.grid(row=0, column=0, sticky="nsew")
-        controls.columnconfigure(0, weight=1)
+        style.configure("App.TFrame", background=APP_BG)
+        style.configure("Panel.TFrame", background=PANEL_BG)
+        style.configure("Card.TFrame", background=CARD_BG)
+        style.configure("App.TLabelframe", background=PANEL_BG, foreground=TEXT_MAIN, borderwidth=1)
+        style.configure("App.TLabelframe.Label", background=PANEL_BG, foreground=ACCENT_2, font=("Segoe UI", 10, "bold"))
+        style.configure("HeaderTitle.TLabel", background=APP_BG, foreground=TEXT_MAIN, font=("Segoe UI", 24, "bold"))
+        style.configure("HeaderSub.TLabel", background=APP_BG, foreground=TEXT_SUB, font=("Segoe UI", 11))
+        style.configure("Title.TLabel", background=PANEL_BG, foreground=TEXT_MAIN, font=("Segoe UI", 10, "bold"))
+        style.configure("Body.TLabel", background=PANEL_BG, foreground=TEXT_MAIN, font=("Segoe UI", 10))
+        style.configure("Hint.TLabel", background=PANEL_BG, foreground=TEXT_SUB, font=("Segoe UI", 9))
+        style.configure("CardTitle.TLabel", background=CARD_BG, foreground=TEXT_SUB, font=("Segoe UI", 9, "bold"))
+        style.configure("CardValue.TLabel", background=CARD_BG, foreground=TEXT_MAIN, font=("Segoe UI", 10, "bold"))
+        style.configure("Accent.Horizontal.TProgressbar", background=ACCENT, troughcolor="#223047", bordercolor="#223047")
+        style.configure("Success.Horizontal.TProgressbar", background=SUCCESS, troughcolor="#223047", bordercolor="#223047")
 
-        content = ttk.Frame(self.root, padding=(0, 16, 16, 16))
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(self.root, style="App.TFrame", padding=(20, 18, 20, 10))
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, weight=0)
+
+        text_block = ttk.Frame(header, style="App.TFrame")
+        text_block.grid(row=0, column=0, sticky="w")
+        ttk.Label(text_block, text=APP_INFO.name, style="HeaderTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            text_block,
+            text="폴더 또는 동영상을 직접 선택하고, 분석 중 시각화 화면을 실시간으로 확인할 수 있습니다.",
+            style="HeaderSub.TLabel",
+            wraplength=760,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        self.header_image_label = ttk.Label(header, style="App.TFrame")
+        self.header_image_label.grid(row=0, column=1, sticky="e", padx=(16, 0))
+
+        body = ttk.Frame(self.root, style="App.TFrame", padding=(20, 0, 20, 20))
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=0, minsize=330)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        controls = ttk.Frame(body, style="Panel.TFrame", padding=14)
+        controls.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        controls.columnconfigure(0, weight=1)
+        controls.rowconfigure(1, weight=1)
+
+        content = ttk.Frame(body, style="Panel.TFrame", padding=14)
         content.grid(row=0, column=1, sticky="nsew")
         content.columnconfigure(0, weight=1)
-        content.rowconfigure(0, weight=3)
+        content.rowconfigure(0, weight=7)
+        content.rowconfigure(1, weight=0)
         content.rowconfigure(2, weight=2)
 
-        ttk.Label(
-            controls,
-            text=APP_INFO.name,
-            font=("Segoe UI", 19, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            controls,
-            text="동영상 또는 폴더를 고른 뒤 GUI에서 시각화 과정을 실시간으로 볼 수 있습니다.",
-            wraplength=320,
-            foreground="#5f6b7a",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
-
-        input_frame = ttk.LabelFrame(controls, text="입력 영상", padding=12)
-        input_frame.grid(row=2, column=0, sticky="nsew")
+        input_frame = ttk.LabelFrame(controls, text="입력 영상", style="App.TLabelframe", padding=12)
+        input_frame.grid(row=0, column=0, sticky="ew")
         input_frame.columnconfigure(0, weight=1)
         input_frame.rowconfigure(1, weight=1)
 
-        button_row = ttk.Frame(input_frame)
+        button_row = ttk.Frame(input_frame, style="Panel.TFrame")
         button_row.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         for column_index in range(3):
             button_row.columnconfigure(column_index, weight=1)
@@ -212,86 +275,148 @@ class PullUpAnalyzerApp:
         self.select_videos_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.select_folder_button = ttk.Button(button_row, text="폴더 선택", command=self._select_folder)
         self.select_folder_button.grid(row=0, column=1, sticky="ew", padx=3)
-        self.clear_selection_button = ttk.Button(button_row, text="선택 비우기", command=self._clear_selection)
+        self.clear_selection_button = ttk.Button(button_row, text="비우기", command=self._clear_selection)
         self.clear_selection_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
 
-        self.video_listbox = tk.Listbox(input_frame, height=14)
-        self.video_listbox.grid(row=1, column=0, sticky="nsew")
-        ttk.Label(
+        self.video_listbox = tk.Listbox(
             input_frame,
-            textvariable=self.selection_var,
-            foreground="#5f6b7a",
-        ).grid(row=2, column=0, sticky="w", pady=(10, 0))
+            height=10,
+            bg="#0b1220",
+            fg=TEXT_MAIN,
+            selectbackground="#1d4ed8",
+            relief="flat",
+            highlightthickness=0,
+            font=("Segoe UI", 10),
+        )
+        self.video_listbox.grid(row=1, column=0, sticky="nsew")
+        ttk.Label(input_frame, textvariable=self.selection_var, style="Hint.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 0))
 
-        output_frame = ttk.LabelFrame(controls, text="결과 저장", padding=12)
-        output_frame.grid(row=3, column=0, sticky="ew", pady=(14, 0))
-        output_frame.columnconfigure(0, weight=1)
+        settings_frame = ttk.LabelFrame(controls, text="분석 설정", style="App.TLabelframe", padding=12)
+        settings_frame.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        settings_frame.columnconfigure(0, weight=1)
 
-        ttk.Entry(output_frame, textvariable=self.output_dir_var).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.select_output_button = ttk.Button(output_frame, text="폴더 변경", command=self._select_output_dir)
+        ttk.Label(settings_frame, text="포즈 모델", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        self.model_combo = ttk.Combobox(
+            settings_frame,
+            textvariable=self.model_name_var,
+            values=SUPPORTED_POSE_MODELS,
+            state="readonly",
+            font=("Segoe UI", 10),
+        )
+        self.model_combo.grid(row=1, column=0, sticky="ew", pady=(6, 10))
+
+        ttk.Label(settings_frame, text="결과 저장 폴더", style="Title.TLabel").grid(row=2, column=0, sticky="w")
+        output_row = ttk.Frame(settings_frame, style="Panel.TFrame")
+        output_row.grid(row=3, column=0, sticky="ew", pady=(6, 10))
+        output_row.columnconfigure(0, weight=1)
+        ttk.Entry(output_row, textvariable=self.output_dir_var).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.select_output_button = ttk.Button(output_row, text="변경", command=self._select_output_dir)
         self.select_output_button.grid(row=0, column=1, sticky="ew")
 
-        start_frame = ttk.Frame(controls)
-        start_frame.grid(row=4, column=0, sticky="ew", pady=(14, 0))
-        start_frame.columnconfigure(0, weight=1)
+        ttk.Label(settings_frame, text="추론 장치", style="Title.TLabel").grid(row=4, column=0, sticky="w")
+        ttk.Label(settings_frame, textvariable=self.device_var, style="Body.TLabel").grid(row=5, column=0, sticky="w", pady=(6, 14))
 
-        self.start_button = ttk.Button(start_frame, text="분석 시작", command=self._start_analysis)
-        self.start_button.grid(row=0, column=0, sticky="ew")
+        action_row = ttk.Frame(settings_frame, style="Panel.TFrame")
+        action_row.grid(row=6, column=0, sticky="ew")
+        action_row.columnconfigure(0, weight=1)
+        action_row.columnconfigure(1, weight=1)
+        self.start_button = ttk.Button(action_row, text="분석 시작", command=self._start_analysis)
+        self.start_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.stop_button = ttk.Button(action_row, text="분석 중단", command=self._stop_analysis, state="disabled")
+        self.stop_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
-        info_frame = ttk.LabelFrame(controls, text="현재 상태", padding=12)
-        info_frame.grid(row=5, column=0, sticky="ew", pady=(14, 0))
-        info_frame.columnconfigure(0, weight=1)
+        status_frame = ttk.LabelFrame(controls, text="상태", style="App.TLabelframe", padding=12)
+        status_frame.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        status_frame.columnconfigure(0, weight=1)
+        ttk.Label(status_frame, text="현재 영상", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(status_frame, textvariable=self.current_video_var, style="Body.TLabel", wraplength=280).grid(row=1, column=0, sticky="w", pady=(4, 10))
+        ttk.Label(status_frame, text="상태 요약", style="Title.TLabel").grid(row=2, column=0, sticky="w")
+        ttk.Label(status_frame, textvariable=self.status_text_var, style="Body.TLabel", wraplength=280).grid(row=3, column=0, sticky="w", pady=(4, 10))
+        ttk.Label(status_frame, text="세션 메모", style="Title.TLabel").grid(row=4, column=0, sticky="w")
+        ttk.Label(status_frame, textvariable=self.summary_var, style="Hint.TLabel", wraplength=280).grid(row=5, column=0, sticky="w", pady=(4, 0))
 
-        ttk.Label(info_frame, text="현재 영상", foreground="#5f6b7a").grid(row=0, column=0, sticky="w")
-        ttk.Label(info_frame, textvariable=self.current_video_var, wraplength=320).grid(row=1, column=0, sticky="w", pady=(2, 10))
-        ttk.Label(info_frame, text="프로그레스", foreground="#5f6b7a").grid(row=2, column=0, sticky="w")
-        ttk.Label(info_frame, textvariable=self.progress_text_var).grid(row=3, column=0, sticky="w", pady=(2, 10))
-        ttk.Label(info_frame, text="분석 상태", foreground="#5f6b7a").grid(row=4, column=0, sticky="w")
-        ttk.Label(info_frame, textvariable=self.status_text_var, wraplength=320).grid(row=5, column=0, sticky="w", pady=(2, 0))
-
-        preview_frame = ttk.LabelFrame(content, text="실시간 시각화", padding=12)
+        preview_frame = ttk.LabelFrame(content, text="실시간 시각화", style="App.TLabelframe", padding=12)
         preview_frame.grid(row=0, column=0, sticky="nsew")
         preview_frame.columnconfigure(0, weight=1)
         preview_frame.rowconfigure(0, weight=1)
 
-        self.preview_label = ttk.Label(
+        self.preview_label = tk.Label(
             preview_frame,
-            text="분석이 시작되면 현재 프레임이 여기에 표시됩니다.",
+            text="분석이 시작되면 현재 프레임이 여기에 크게 표시됩니다.",
             anchor="center",
             justify="center",
+            bg="#09111d",
+            fg=TEXT_SUB,
+            font=("Segoe UI", 12),
         )
         self.preview_label.grid(row=0, column=0, sticky="nsew")
 
-        progress_frame = ttk.Frame(content, padding=(0, 12, 0, 12))
-        progress_frame.grid(row=1, column=0, sticky="ew")
+        progress_frame = ttk.Frame(content, style="Panel.TFrame")
+        progress_frame.grid(row=1, column=0, sticky="ew", pady=(12, 12))
         progress_frame.columnconfigure(0, weight=1)
+        progress_frame.columnconfigure(1, weight=1)
 
-        ttk.Progressbar(
-            progress_frame,
-            variable=self.progress_var,
-            maximum=100.0,
-            mode="determinate",
-        ).grid(row=0, column=0, sticky="ew")
+        current_card = ttk.Frame(progress_frame, style="Card.TFrame", padding=12)
+        current_card.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        current_card.columnconfigure(0, weight=1)
+        ttk.Label(current_card, text="현재 영상 진행률", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(current_card, textvariable=self.current_progress_text_var, style="CardValue.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 8))
+        ttk.Progressbar(current_card, variable=self.current_progress_var, maximum=100.0, style="Accent.Horizontal.TProgressbar").grid(row=2, column=0, sticky="ew")
 
-        log_frame = ttk.LabelFrame(content, text="실행 로그", padding=12)
+        overall_card = ttk.Frame(progress_frame, style="Card.TFrame", padding=12)
+        overall_card.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        overall_card.columnconfigure(0, weight=1)
+        ttk.Label(overall_card, text="전체 진행률", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(overall_card, textvariable=self.overall_progress_text_var, style="CardValue.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 8))
+        ttk.Progressbar(overall_card, variable=self.overall_progress_var, maximum=100.0, style="Success.Horizontal.TProgressbar").grid(row=2, column=0, sticky="ew")
+
+        log_frame = ttk.LabelFrame(content, text="실행 로그", style="App.TLabelframe", padding=12)
         log_frame.grid(row=2, column=0, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
-        self.log_text = ScrolledText(log_frame, wrap="word", font=("Consolas", 10))
+        self.log_text = ScrolledText(
+            log_frame,
+            wrap="word",
+            height=9,
+            font=("Consolas", 10),
+            bg="#0b1220",
+            fg=TEXT_MAIN,
+            insertbackground=TEXT_MAIN,
+            relief="flat",
+            highlightthickness=0,
+        )
         self.log_text.grid(row=0, column=0, sticky="nsew")
         self.log_text.configure(state="disabled")
 
-    def _set_controls_enabled(self, enabled: bool) -> None:
-        state = "normal" if enabled else "disabled"
-        for widget in (
-            self.select_videos_button,
-            self.select_folder_button,
-            self.clear_selection_button,
-            self.select_output_button,
-            self.start_button,
-        ):
-            widget.configure(state=state)
+    def _load_header_title(self) -> None:
+        title_image_path = resolve_title_image_path(PROJECT_DIR)
+        if title_image_path is None:
+            return
+
+        image = Image.open(title_image_path)
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGBA")
+        max_width = 280
+        max_height = 88
+        image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+        self.header_image = ImageTk.PhotoImage(image)
+        self.header_image_label.configure(image=self.header_image)
+
+    def _refresh_device_label(self) -> None:
+        device, note = resolve_inference_device()
+        self.device_var.set(f"{humanize_device(device)} | {note}")
+
+    def _set_running_state(self, running: bool) -> None:
+        selector_state = "disabled" if running else "normal"
+        combo_state = "disabled" if running else "readonly"
+        self.select_videos_button.configure(state=selector_state)
+        self.select_folder_button.configure(state=selector_state)
+        self.clear_selection_button.configure(state=selector_state)
+        self.select_output_button.configure(state=selector_state)
+        self.start_button.configure(state="disabled" if running else "normal")
+        self.stop_button.configure(state="normal" if running else "disabled")
+        self.model_combo.configure(state=combo_state)
 
     def _append_log(self, text: str) -> None:
         self.log_text.configure(state="normal")
@@ -306,8 +431,10 @@ class PullUpAnalyzerApp:
 
         if self.selected_videos:
             self.selection_var.set(f"{len(self.selected_videos)}개 영상 선택됨")
+            self.summary_var.set("선택이 완료됐습니다. 모델과 저장 폴더를 확인한 뒤 분석을 시작해 주세요.")
         else:
             self.selection_var.set("선택된 영상이 없습니다.")
+            self.summary_var.set("영상 또는 폴더를 선택하면 이곳에 준비 상태가 표시됩니다.")
 
     def _add_videos(self, paths: list[Path]) -> None:
         existing = {path.resolve() for path in self.selected_videos}
@@ -322,10 +449,7 @@ class PullUpAnalyzerApp:
         self._update_selection_view()
 
     def _select_videos(self) -> None:
-        paths = filedialog.askopenfilenames(
-            title="분석할 동영상 선택",
-            filetypes=VIDEO_FILETYPES,
-        )
+        paths = filedialog.askopenfilenames(title="분석할 동영상 선택", filetypes=VIDEO_FILETYPES)
         self._add_videos([Path(path) for path in paths])
 
     def _select_folder(self) -> None:
@@ -352,26 +476,38 @@ class PullUpAnalyzerApp:
             messagebox.showwarning("입력 필요", "분석할 mp4 동영상이나 폴더를 먼저 선택해 주세요.")
             return
 
+        self.cancel_event.clear()
         output_dir = Path(self.output_dir_var.get()).expanduser().resolve()
         ensure_directory(output_dir)
         self.output_dir = output_dir
-        self.progress_var.set(0.0)
-        self.progress_text_var.set("준비 중")
-        self.status_text_var.set("모델과 입력 영상을 준비하고 있습니다.")
+        self.current_progress_var.set(0.0)
+        self.overall_progress_var.set(0.0)
+        self.current_progress_text_var.set("모델과 입력 영상을 준비 중입니다.")
+        self.overall_progress_text_var.set(f"총 {len(self.selected_videos)}개 영상 대기 중")
+        self.status_text_var.set("모델을 불러오고 첫 영상을 준비하고 있습니다.")
         self.current_video_var.set("대기 중")
-        self.preview_label.configure(image="", text="분석을 시작했습니다. 첫 프레임을 기다리는 중입니다.")
+        self.summary_var.set("실시간 프리뷰가 곧 시작됩니다.")
+        self.preview_label.configure(image="", text="분석 준비 중입니다. 잠시만 기다려 주세요.")
         self.preview_image = None
-        self._set_controls_enabled(False)
+        self._set_running_state(True)
 
         selected_paths = list(self.selected_videos)
+        model_name = self.model_name_var.get().strip() or DEFAULT_MODEL_NAME
         self.worker = threading.Thread(
             target=self._run_analysis_worker,
-            args=(selected_paths, output_dir),
+            args=(selected_paths, output_dir, model_name),
             daemon=True,
         )
         self.worker.start()
 
-    def _run_analysis_worker(self, input_videos: list[Path], output_dir: Path) -> None:
+    def _stop_analysis(self) -> None:
+        if self.worker is None or not self.worker.is_alive():
+            return
+        self.cancel_event.set()
+        self.status_text_var.set("현재 작업을 정리한 뒤 분석을 중단하고 있습니다.")
+        self.summary_var.set("중단 요청을 보냈습니다. 저장 중인 프레임 정리가 끝나면 종료됩니다.")
+
+    def _run_analysis_worker(self, input_videos: list[Path], output_dir: Path, model_name: str) -> None:
         reporter = GuiReporter(self.event_queue)
         try:
             device, device_note = resolve_inference_device()
@@ -387,25 +523,36 @@ class PullUpAnalyzerApp:
                     iou=0.50,
                     device=device,
                 ),
+                requested_model=model_name,
             )
             reporter.info(f"GUI 분석을 시작합니다. 선택된 영상 {len(input_videos)}개")
+            reporter.info(f"선택 모델: {model_name}")
             reporter.info(f"장치 확인 결과: {device_note}")
-            success_count, total_count = run_analysis(
+            result = run_analysis(
                 config,
                 reporter,
                 input_videos,
                 frame_callback=self._enqueue_preview_frame,
+                stop_callback=self.cancel_event.is_set,
             )
             self.event_queue.put(
                 {
                     "type": "done",
-                    "success_count": success_count,
-                    "total_count": total_count,
+                    "success_count": result.success_count,
+                    "total_count": result.total_count,
+                    "cancelled": result.cancelled,
                 }
             )
         except Exception as exc:
             self.event_queue.put({"type": "error", "text": str(exc)})
-            self.event_queue.put({"type": "done", "success_count": 0, "total_count": len(input_videos)})
+            self.event_queue.put(
+                {
+                    "type": "done",
+                    "success_count": 0,
+                    "total_count": len(input_videos),
+                    "cancelled": False,
+                }
+            )
 
     def _enqueue_preview_frame(self, frame, **payload) -> None:
         event = {"frame": frame.copy(), **payload}
@@ -414,7 +561,6 @@ class PullUpAnalyzerApp:
                 self.frame_queue.get_nowait()
         except queue.Empty:
             pass
-
         self.frame_queue.put_nowait(event)
 
     def _poll_queues(self) -> None:
@@ -439,6 +585,11 @@ class PullUpAnalyzerApp:
 
     def _handle_event(self, event: dict) -> None:
         event_type = event["type"]
+
+        if event_type == "banner":
+            self._append_log(f"{APP_INFO.name} {APP_INFO.version}")
+            return
+
         if event_type == "log":
             level_label = {
                 "info": "[안내]",
@@ -449,6 +600,9 @@ class PullUpAnalyzerApp:
             return
 
         if event_type == "session":
+            self.summary_var.set(
+                f"모델 {event['model_name']} | {event['video_count']}개 영상 | 결과 폴더 {Path(event['results_dir']).name}"
+            )
             self._append_log(
                 "\n".join(
                     [
@@ -465,9 +619,10 @@ class PullUpAnalyzerApp:
 
         if event_type == "video_started":
             self.current_video_var.set(Path(event["input_path"]).name)
-            self.progress_var.set(0.0)
-            self.progress_text_var.set(f"{event['index']}/{event['total']} | 0 / {event['total_frames']}")
-            self.status_text_var.set("첫 프레임을 분석 중입니다.")
+            self.current_progress_var.set(0.0)
+            self.current_progress_text_var.set(f"{event['index']}/{event['total']} | 0 / {event['total_frames']} 프레임")
+            self.overall_progress_text_var.set(f"전체 {event['index']}/{event['total']} 진행 중")
+            self.status_text_var.set("현재 영상을 분석하고 있습니다.")
             self._append_log(
                 "\n".join(
                     [
@@ -485,8 +640,12 @@ class PullUpAnalyzerApp:
         if event_type == "progress":
             total = max(1, int(event["total"])) if event["total"] else 1
             current = min(int(event["current"]), total)
-            self.progress_var.set((current / total) * 100.0)
-            self.progress_text_var.set(f"{event['label']} | {current} / {total}")
+            current_ratio = current / total
+            self.current_progress_var.set(current_ratio * 100.0)
+            self.current_progress_text_var.set(f"{event['label']} | {current} / {total} 프레임")
+            overall_ratio = ((event["job_index"] - 1) + current_ratio) / max(1, event["job_total"])
+            self.overall_progress_var.set(overall_ratio * 100.0)
+            self.overall_progress_text_var.set(f"전체 {event['job_index']}/{event['job_total']} | {overall_ratio * 100.0:5.1f}%")
             if event["status"]:
                 self.status_text_var.set(event["status"])
             return
@@ -521,16 +680,18 @@ class PullUpAnalyzerApp:
             return
 
         if event_type == "done":
-            self._set_controls_enabled(True)
-            self.progress_var.set(100.0 if event["success_count"] and event["success_count"] == event["total_count"] else self.progress_var.get())
-            self.progress_text_var.set(
-                f"완료 | {event['success_count']} / {event['total_count']}개"
-                if event["total_count"] > 0 else "완료"
-            )
-            if event["total_count"] > 0 and event["success_count"] == event["total_count"]:
+            self._set_running_state(False)
+            if event["cancelled"]:
+                self.status_text_var.set("사용자 요청으로 분석이 중단됐습니다.")
+                self.summary_var.set("중단된 시점까지의 로그와 프리뷰는 그대로 유지됩니다.")
+            elif event["total_count"] > 0 and event["success_count"] == event["total_count"]:
+                self.current_progress_var.set(100.0)
+                self.overall_progress_var.set(100.0)
                 self.status_text_var.set("모든 영상 분석이 완료됐습니다.")
-            elif event["total_count"] > 0:
+                self.summary_var.set("결과 영상 저장이 끝났습니다.")
+            else:
                 self.status_text_var.set("일부 영상 분석에 실패했습니다. 로그를 확인해 주세요.")
+                self.summary_var.set("오류가 발생한 영상이 있습니다. 로그를 참고해 주세요.")
             return
 
     def _update_preview(self, event: dict) -> None:
@@ -538,9 +699,9 @@ class PullUpAnalyzerApp:
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb_frame)
 
-        max_width = 960
-        max_height = 560
-        image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+        available_width = max(420, self.preview_label.winfo_width() - 24)
+        available_height = max(280, self.preview_label.winfo_height() - 24)
+        image.thumbnail((available_width, available_height), Image.Resampling.LANCZOS)
 
         self.preview_image = ImageTk.PhotoImage(image)
         self.preview_label.configure(image=self.preview_image, text="")
@@ -548,7 +709,7 @@ class PullUpAnalyzerApp:
 
 def main() -> None:
     root = tk.Tk()
-    app = PullUpAnalyzerApp(root)
+    PullUpAnalyzerApp(root)
     root.mainloop()
 
 
