@@ -69,7 +69,7 @@
 
 Windows x64 실행 파일:
 
-- [PullUpAnalyzer-win-x64-v1.2.0.zip](https://github.com/HeungJunKim/pullup-analyzer/releases/download/v1.2.0/PullUpAnalyzer-win-x64-v1.2.0.zip)
+- [PullUpAnalyzer-win-x64-20260323.zip](https://github.com/HeungJunKim/pullup-analyzer/releases/download/v1.2.1/PullUpAnalyzer-win-x64-20260323.zip)
 
 안내:
 
@@ -152,7 +152,7 @@ pullup-analyzer/
 - `models/`: YOLO pose 모델 파일 보관
 - `videos/`: 입력 영상 보관
 - `results/`: 분석 결과 영상 저장
-- `resource/`: 타이틀 이미지, GUI 캡처(`app.png`), 데모 영상 보관
+- `resource/`: GUI 캡처(`app.png`), 데모 영상 등 문서용 리소스 보관
 
 ## 점수 체계
 
@@ -178,7 +178,7 @@ pullup-analyzer/
 - `app.py`는 데스크톱 GUI로 개별 동영상 또는 폴더를 직접 선택해서 실시간 시각화와 함께 분석할 수 있습니다.
 - 결과 파일명은 기본적으로 `<원본파일명>_result.mp4` 형식입니다.
 - 콘솔은 스크롤이 과하게 밀리지 않도록 진행률 바와 상태줄 중심으로 출력합니다.
-- README 상단 이미지는 `resource/app.png`, 타이틀 이미지는 `resource/tilte.png`를 사용합니다.
+- README 상단 이미지는 `resource/app.png`를 사용합니다.
 
 ## 레퍼런스
 

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -35,13 +36,16 @@ SUPPORTED_POSE_MODELS = (
     "yolo26x-pose.pt",
 )
 REMOVED_POSE_MODELS = ("yolo26n-pose.pt",)
-MODEL_DOWNLOAD_BASE_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
+DEFAULT_MODEL_DOWNLOAD_BASE_URLS = (
+    "https://github.com/ultralytics/assets/releases/download/v8.4.0",
+)
 DEFAULT_MODEL_NAME = "yolo26m-pose.pt"
 FINAL_FRAME_HOLD_SECONDS = 3.0
 OUTPUT_VIDEO_CODEC = "libx264"
 OUTPUT_VIDEO_PRESET = "slow"
 OUTPUT_VIDEO_CRF = "14"
 OUTPUT_VIDEO_PIXEL_FORMAT = "yuv420p"
+MODEL_DOWNLOAD_TIMEOUT_SECONDS = 120
 APP_INFO = AppInfo(
     name="Pull-Up Analyzer",
     version="0.2.0",
@@ -167,11 +171,155 @@ def build_runtime_config(args: argparse.Namespace) -> RuntimeConfig:
     return RuntimeConfig(directories=directories, inference=inference, requested_model=args.model_name)
 
 
-def download_file(url: str, destination_path: Path, reporter: ConsoleReporter) -> None:
+def configured_model_download_base_urls() -> tuple[str, ...]:
+    configured = os.environ.get("PULLUP_MODEL_BASE_URLS") or os.environ.get("PULLUP_MODEL_BASE_URL") or ""
+    base_urls: list[str] = []
+    for raw_value in configured.replace(";", "\n").replace(",", "\n").splitlines():
+        value = raw_value.strip().rstrip("/")
+        if value and value not in base_urls:
+            base_urls.append(value)
+    for default_url in DEFAULT_MODEL_DOWNLOAD_BASE_URLS:
+        if default_url not in base_urls:
+            base_urls.append(default_url)
+    return tuple(base_urls)
+
+
+def build_model_download_urls(model_name: str) -> tuple[str, ...]:
+    return tuple(f"{base_url}/{model_name}" for base_url in configured_model_download_base_urls())
+
+
+def _download_with_urllib(url: str, destination_path: Path) -> None:
+    temp_path = destination_path.with_name(f"{destination_path.name}.part")
+    temp_path.unlink(missing_ok=True)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"PullUpAnalyzer/{APP_INFO.version}",
+            "Accept": "*/*",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            with temp_path.open("wb") as file:
+                shutil.copyfileobj(response, file, length=1024 * 1024)
+        if not temp_path.exists() or temp_path.stat().st_size <= 0:
+            raise RuntimeError("다운로드한 파일이 비어 있습니다.")
+        os.replace(temp_path, destination_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _download_with_powershell(url: str, destination_path: Path) -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("PowerShell 다운로드는 Windows에서만 사용할 수 있습니다.")
+
+    temp_path = destination_path.with_name(f"{destination_path.name}.part")
+    temp_path.unlink(missing_ok=True)
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            (
+                "& {"
+                "param([string]$Url, [string]$OutFile) "
+                "$ProgressPreference = 'SilentlyContinue'; "
+                "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
+                "Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing"
+                " }"
+            ),
+            url,
+            str(temp_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        **hidden_subprocess_kwargs(),
+    )
+    if result.returncode != 0:
+        temp_path.unlink(missing_ok=True)
+        detail = result.stderr.strip() or result.stdout.strip() or f"PowerShell exit code {result.returncode}"
+        raise RuntimeError(detail)
+    if not temp_path.exists() or temp_path.stat().st_size <= 0:
+        temp_path.unlink(missing_ok=True)
+        raise RuntimeError("PowerShell 다운로드 결과 파일이 비어 있습니다.")
+    os.replace(temp_path, destination_path)
+
+
+def _download_with_curl(url: str, destination_path: Path) -> None:
+    curl_path = resolve_system_binary("curl")
+    if curl_path is None:
+        raise RuntimeError("curl을 찾지 못했습니다.")
+
+    temp_path = destination_path.with_name(f"{destination_path.name}.part")
+    temp_path.unlink(missing_ok=True)
+    result = subprocess.run(
+        [
+            curl_path,
+            "-L",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--output",
+            str(temp_path),
+            url,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        **hidden_subprocess_kwargs(),
+    )
+    if result.returncode != 0:
+        temp_path.unlink(missing_ok=True)
+        detail = result.stderr.strip() or result.stdout.strip() or f"curl exit code {result.returncode}"
+        raise RuntimeError(detail)
+    if not temp_path.exists() or temp_path.stat().st_size <= 0:
+        temp_path.unlink(missing_ok=True)
+        raise RuntimeError("curl 다운로드 결과 파일이 비어 있습니다.")
+    os.replace(temp_path, destination_path)
+
+
+def download_file(urls: tuple[str, ...], destination_path: Path, reporter: ConsoleReporter) -> None:
     ensure_directory(destination_path.parent)
     reporter.info(f"모델 파일을 다운로드하고 있습니다: {destination_path.name}")
-    urllib.request.urlretrieve(url, destination_path)
-    reporter.info(f"모델 다운로드가 끝났습니다: {destination_path}")
+    if sys.platform == "win32":
+        download_methods = (
+            ("powershell", _download_with_powershell),
+            ("curl", _download_with_curl),
+            ("python", _download_with_urllib),
+        )
+    else:
+        download_methods = (
+            ("python", _download_with_urllib),
+            ("curl", _download_with_curl),
+        )
+    attempts: list[str] = []
+    for index, url in enumerate(urls, start=1):
+        reporter.info(f"다운로드 시도 {index}/{len(urls)}: {url}")
+        errors: list[str] = []
+        for method_name, downloader in download_methods:
+            try:
+                downloader(url, destination_path)
+                reporter.info(f"모델 다운로드가 끝났습니다: {destination_path}")
+                return
+            except Exception as exc:
+                errors.append(f"{method_name}: {exc}")
+
+        attempts.append(f"{url} ({'; '.join(errors)})")
+        reporter.warn(f"모델 다운로드 재시도가 필요합니다: {url}")
+
+    attempted_urls = "\n".join(f"- {entry}" for entry in attempts)
+    raise RuntimeError(
+        "자동 모델 다운로드에 실패했습니다.\n"
+        f"수동으로 '{destination_path.name}' 파일을 '{destination_path.parent}' 폴더에 넣은 뒤 다시 시도해 주세요.\n"
+        "시도한 주소와 오류:\n"
+        f"{attempted_urls}"
+    )
 
 
 def resolve_model_path(models_dir: Path, reporter: ConsoleReporter, requested_model: str | None = None) -> Path:
@@ -205,8 +353,8 @@ def resolve_model_path(models_dir: Path, reporter: ConsoleReporter, requested_mo
         reporter.info(f"모델 파일을 찾았습니다: {candidate_path}")
         return candidate_path
 
-    model_url = f"{MODEL_DOWNLOAD_BASE_URL}/{candidate_name}"
-    download_file(model_url, candidate_path, reporter)
+    model_urls = build_model_download_urls(candidate_name)
+    download_file(model_urls, candidate_path, reporter)
     return candidate_path
 
 
@@ -454,7 +602,7 @@ def process_video(
 ) -> bool:
     import cv2
 
-    from .rendering import format_video_session_label, prepare_title_banner, render_pose_overlay
+    from .rendering import format_video_session_label, render_pose_overlay
     from .state import PullUpState
 
     temp_output_path = build_temp_output_path(job.output_path, "video_only")
@@ -499,17 +647,6 @@ def process_video(
         state = PullUpState(fps=metadata.fps)
         session_label = format_video_session_label(job.input_path)
         progress = reporter.open_progress(index=job.index, total=job.total, input_path=job.input_path, total_frames=metadata.total_frames)
-        title_banner = None
-
-        title_image_path = resolve_title_image_path(config.directories.project_dir)
-        if title_image_path is not None:
-            title_image = cv2.imread(str(title_image_path), cv2.IMREAD_UNCHANGED)
-            if title_image is None:
-                reporter.warn(f"타이틀 이미지를 읽지 못해 건너뜁니다: {title_image_path}")
-            else:
-                frame_shape = (metadata.output_size[1], metadata.output_size[0], 3)
-                title_banner = prepare_title_banner(title_image, frame_shape)
-
         metrics = state.metrics()
         processed_frames = 0
         inference_device = config.inference.device
@@ -550,7 +687,7 @@ def process_video(
                 else:
                     raise
 
-            annotated_frame, metrics = render_pose_overlay(frame, results, state, session_label, title_banner)
+            annotated_frame, metrics = render_pose_overlay(frame, results, state, session_label)
             if frame_callback is not None:
                 frame_callback(
                     annotated_frame,

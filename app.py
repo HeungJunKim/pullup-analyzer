@@ -26,7 +26,6 @@ from pullup_analyzer.analyzer import (
     RuntimeConfig,
     ensure_directory,
     resolve_inference_device_with_policy,
-    resolve_title_image_path,
     run_analysis,
 )
 from pullup_analyzer.console import (
@@ -271,7 +270,6 @@ class PullUpAnalyzerApp:
         self.preview_image = None
         self.preview_source_image: Image.Image | None = None
         self.preview_empty_text = "분석이 시작되면 현재 프레임이 여기에 표시됩니다."
-        self.header_image = None
         self.font_family = "Segoe UI"
         self.mono_font_family = "Consolas"
 
@@ -295,7 +293,6 @@ class PullUpAnalyzerApp:
         self.last_error_text: str | None = None
 
         self._build_ui()
-        self._load_header_title()
         self._refresh_device_label()
         self._poll_queues()
 
@@ -454,7 +451,6 @@ class PullUpAnalyzerApp:
         header = ttk.Frame(self.root, style="App.TFrame", padding=(22, 18, 22, 10))
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        header.columnconfigure(1, weight=0)
 
         text_block = ttk.Frame(header, style="App.TFrame")
         text_block.grid(row=0, column=0, sticky="w")
@@ -465,9 +461,6 @@ class PullUpAnalyzerApp:
             style="HeaderSub.TLabel",
             wraplength=760,
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-
-        self.header_image_label = ttk.Label(header, style="App.TFrame")
-        self.header_image_label.grid(row=0, column=1, sticky="e", padx=(16, 0))
 
         body = ttk.Frame(self.root, style="App.TFrame", padding=(18, 0, 18, 18))
         body.grid(row=1, column=0, sticky="nsew")
@@ -926,20 +919,6 @@ class PullUpAnalyzerApp:
         )
         self.preview_image = ImageTk.PhotoImage(render_image)
         self.preview_canvas.create_image(canvas_width / 2, canvas_height / 2, image=self.preview_image, anchor="center")
-
-    def _load_header_title(self) -> None:
-        title_image_path = resolve_title_image_path(PROJECT_DIR)
-        if title_image_path is None:
-            return
-
-        image = Image.open(title_image_path)
-        if image.mode not in ("RGB", "RGBA"):
-            image = image.convert("RGBA")
-        max_width = 320
-        max_height = 96
-        image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-        self.header_image = ImageTk.PhotoImage(image)
-        self.header_image_label.configure(image=self.header_image)
 
     def _refresh_device_label(self) -> None:
         device, note = resolve_inference_device_with_policy(allow_gpu=False)
