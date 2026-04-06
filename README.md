@@ -69,14 +69,14 @@
 
 Windows x64 실행 파일:
 
-- [PullUpAnalyzer-win-x64-20260323.zip](https://github.com/HeungJunKim/pullup-analyzer/releases/download/v1.2.1/PullUpAnalyzer-win-x64-20260323.zip)
+- [PullUpAnalyzer-win-x64-20260330.zip](https://github.com/HeungJunKim/pullup-analyzer/releases/download/v1.2.2/PullUpAnalyzer-win-x64-20260330.zip)
 
 안내:
 
 - Python 설치 없이 바로 실행할 수 있습니다.
 - CPU 전용 데스크톱 빌드입니다.
 - 첫 실행 시 포즈 모델은 `%LOCALAPPDATA%\PullUpAnalyzer\models` 경로로 자동 다운로드됩니다.
-- 결과 파일은 기본적으로 `%LOCALAPPDATA%\PullUpAnalyzer\results` 아래에 저장되며, GUI에서 다른 폴더로 변경할 수 있습니다.
+- 결과 파일은 기본적으로 EXE와 같은 폴더 아래의 `results/`에 저장되며, GUI에서 다른 폴더로 변경할 수 있습니다.
 
 ## 설치
 

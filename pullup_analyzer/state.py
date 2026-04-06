@@ -43,6 +43,7 @@ def calculate_angle(p1, p2, p3, *, is_right_arm: bool = False) -> float:
 class AnalysisThresholds:
     ready_wrist_lift_ratio: float = 0.35
     stand_return_wrist_drop_ratio: float = 0.55
+    ready_extension_angle: float = 138.0
     full_extension_angle: float = 150.0
     pull_entry_angle: float = 118.0
     down_entry_angle: float = 95.0
@@ -732,7 +733,7 @@ class PullUpState:
         rise_pixels, rise_ratio = self._shoulder_rise(shoulder_y, body_scale)
 
         wrists_above_shoulders = wrist_y < pose.shoulder_y - body_scale * self.thresholds.ready_wrist_lift_ratio
-        full_extension = left_angle >= self.thresholds.full_extension_angle and right_angle >= self.thresholds.full_extension_angle
+        ready_extension = left_angle >= self.thresholds.ready_extension_angle and right_angle >= self.thresholds.ready_extension_angle
 
         new_state = self.current_state
 
@@ -745,7 +746,10 @@ class PullUpState:
                 self._reset_hanging_state()
                 new_state = STATE_STAND
 
-        if not self.is_standing and full_extension and wrists_above_shoulders:
+        # First-hang elbow angles are often a little noisy, so use a slightly looser
+        # extension threshold to enter the hanging/ready state without dropping the
+        # stricter full-extension scoring thresholds.
+        if not self.is_standing and ready_extension and wrists_above_shoulders:
             self.is_ready = True
             self.grip_type = self._resolve_grip_type(pose)
             self._update_hanging_reference(pose)
@@ -767,7 +771,7 @@ class PullUpState:
                     new_state = STATE_DOWN
                 else:
                     new_state = STATE_PULL
-            elif self.current_state == STATE_DOWN and full_extension and rise_ratio <= self.thresholds.reset_rise_ratio and wrists_above_shoulders:
+            elif self.current_state == STATE_DOWN and ready_extension and rise_ratio <= self.thresholds.reset_rise_ratio and wrists_above_shoulders:
                 self._update_hanging_reference(pose)
                 new_state = STATE_DEADHANG
 

@@ -12,14 +12,15 @@ import time
 from typing import Callable
 import urllib.request
 
-from .runtime import get_bundle_dir, get_user_data_dir, resolve_binary
+from .runtime import get_bundle_dir, get_executable_dir, get_user_data_dir, resolve_binary
 
 
 PROJECT_DIR = get_bundle_dir()
+EXECUTABLE_DIR = get_executable_dir()
 USER_DATA_DIR = get_user_data_dir()
 DEFAULT_MODELS_DIR = USER_DATA_DIR / "models"
 DEFAULT_VIDEOS_DIR = USER_DATA_DIR / "videos"
-DEFAULT_RESULTS_DIR = USER_DATA_DIR / "results"
+DEFAULT_RESULTS_DIR = EXECUTABLE_DIR / "results"
 ULTRALYTICS_CONFIG_DIR = USER_DATA_DIR / ".ultralytics"
 ULTRALYTICS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("YOLO_CONFIG_DIR", str(ULTRALYTICS_CONFIG_DIR))
