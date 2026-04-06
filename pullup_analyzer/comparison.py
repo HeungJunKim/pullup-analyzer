@@ -39,6 +39,7 @@ OUTPUT_BORDER_PADDING = 48
 SOURCE_MASK_FILL = 255
 SNAPSHOT_SAME_POINT_FADE_SECONDS = 1.7
 SNAPSHOT_NEXT_POINT_FADE_SECONDS = 1.0
+VIDEO2_SCALE_BIAS = 1.05
 
 
 @dataclass(frozen=True)
@@ -489,6 +490,8 @@ def compute_output_layout(analysis_items: list[VideoAnalysis]) -> tuple[int, int
 
     for item in analysis_items:
         scale = target_hip_width / max(1.0, item.median_hip_width)
+        if item.label == "video2":
+            scale *= VIDEO2_SCALE_BIAS
         baseline_shoulder = item.baseline_shoulder_center
         frame_width, frame_height = item.metadata.output_size
         left = -scale * baseline_shoulder[0]
@@ -609,20 +612,16 @@ def render_aligned_frame(
     background: np.ndarray,
     pose: PoseFrame | None,
     show_pose_overlay: bool,
+    x_offset: float = 0.0,
 ) -> np.ndarray:
     source = frame.copy()
     if show_pose_overlay and pose is not None:
         draw_pose_overlay(source, pose)
 
     output_width, output_height = canvas_size
-    translate_x = placement.translate_x
-    if pose is not None:
-        target_center_x = output_width / 2.0
-        current_center_x = placement.scale * float(pose.shoulder_center[0]) + placement.translate_x
-        translate_x += target_center_x - current_center_x
     transform = np.asarray(
         [
-            [placement.scale, 0.0, translate_x],
+            [placement.scale, 0.0, placement.translate_x + x_offset],
             [0.0, placement.scale, placement.translate_y],
         ],
         dtype=np.float32,
@@ -694,6 +693,7 @@ def read_selected_frames(
     background: np.ndarray,
     pose_by_frame: dict[int, PoseFrame],
     show_pose_overlay: bool,
+    x_offset: float = 0.0,
 ) -> dict[int, np.ndarray]:
     if not frame_indices:
         return {}
@@ -720,6 +720,7 @@ def read_selected_frames(
                 background=background,
                 pose=pose_by_frame.get(frame_index),
                 show_pose_overlay=show_pose_overlay,
+                x_offset=x_offset,
             )
             results[frame_index] = aligned
         return results
@@ -736,6 +737,7 @@ def read_decorated_frame(
     pose_by_frame: dict[int, PoseFrame],
     show_pose_overlay: bool,
     accent_color: tuple[int, int, int],
+    x_offset: float = 0.0,
 ) -> np.ndarray | None:
     aligned_frames = read_selected_frames(
         analysis.input_path,
@@ -746,6 +748,7 @@ def read_decorated_frame(
         background=background,
         pose_by_frame=pose_by_frame,
         show_pose_overlay=show_pose_overlay,
+        x_offset=x_offset,
     )
     aligned = aligned_frames.get(frame_index)
     if aligned is None:
@@ -768,6 +771,7 @@ def write_frame_interval(
     background: np.ndarray,
     accent_color: tuple[int, int, int],
     output_fps: float,
+    x_offset: float = 0.0,
 ) -> np.ndarray | None:
     if end_frame < start_frame:
         return None
@@ -789,6 +793,7 @@ def write_frame_interval(
                 background=background,
                 pose=pose,
                 show_pose_overlay=segment.show_pose_overlay,
+                x_offset=x_offset,
             )
             decorated = decorate_frame(
                 aligned,
@@ -840,6 +845,7 @@ def write_segment(
     accent_color: tuple[int, int, int],
     output_fps: float,
     capture_frames: set[int] | None = None,
+    x_offset: float = 0.0,
 ) -> dict[int, np.ndarray]:
     captured_frames: dict[int, np.ndarray] = {}
     sampling_state = {"carry": 0.0}
@@ -857,6 +863,7 @@ def write_segment(
             background=background,
             pose=pose,
             show_pose_overlay=segment.show_pose_overlay,
+            x_offset=x_offset,
         )
         decorated = decorate_frame(
             aligned,
@@ -905,6 +912,16 @@ def render_dual_overlay_segment(
 
     placement1 = analysis1.placement or VideoPlacement(1.0, 0.0, 0.0)
     placement2 = analysis2.placement or VideoPlacement(1.0, 0.0, 0.0)
+    start_pose1 = first_pose_in_segment(segment1)
+    start_pose2 = first_pose_in_segment(segment2)
+    x_offset1 = 0.0
+    x_offset2 = compute_x_alignment_offset(
+        reference_analysis=analysis1,
+        reference_pose=start_pose1,
+        reference_x_offset=x_offset1,
+        target_analysis=analysis2,
+        target_pose=start_pose2,
+    )
     source_span1 = max(1, segment1.end_frame - segment1.start_frame)
     source_span2 = max(1, segment2.end_frame - segment2.start_frame)
     output_frame_count = max(
@@ -942,6 +959,7 @@ def render_dual_overlay_segment(
                 background=background,
                 pose=pose1,
                 show_pose_overlay=False,
+                x_offset=x_offset1,
             )
             aligned2 = render_aligned_frame(
                 frame2,
@@ -951,6 +969,7 @@ def render_dual_overlay_segment(
                 background=background,
                 pose=pose2,
                 show_pose_overlay=False,
+                x_offset=x_offset2,
             )
             blended = cv2.addWeighted(aligned1, max(0.0, 1.0 - alpha), aligned2, max(0.0, alpha), 0.0)
             writer.write(
@@ -983,6 +1002,11 @@ def transformed_shoulder_y(analysis: VideoAnalysis, pose: PoseFrame) -> float:
     return float(placement.scale * float(pose.shoulder_center[1]) + placement.translate_y)
 
 
+def transformed_shoulder_x(analysis: VideoAnalysis, pose: PoseFrame, *, x_offset: float = 0.0) -> float:
+    placement = analysis.placement or VideoPlacement(1.0, 0.0, 0.0)
+    return float(placement.scale * float(pose.shoulder_center[0]) + placement.translate_x + x_offset)
+
+
 def segment_shoulder_range(analysis: VideoAnalysis, segment: RepSegment) -> tuple[float, float]:
     transformed_values = [
         transformed_shoulder_y(analysis, pose)
@@ -1007,6 +1031,40 @@ def shift_frame_vertically(frame: np.ndarray, delta_y: float) -> np.ndarray:
     )
 
 
+def shift_frame_horizontally(frame: np.ndarray, delta_x: float) -> np.ndarray:
+    if abs(delta_x) < 0.5:
+        return frame
+    transform = np.asarray([[1.0, 0.0, float(delta_x)], [0.0, 1.0, 0.0]], dtype=np.float32)
+    return cv2.warpAffine(
+        frame,
+        transform,
+        (frame.shape[1], frame.shape[0]),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT,
+    )
+
+
+def first_pose_in_segment(segment: RepSegment) -> PoseFrame | None:
+    if not segment.pose_by_frame:
+        return None
+    return segment.pose_by_frame[min(segment.pose_by_frame)]
+
+
+def compute_x_alignment_offset(
+    *,
+    reference_analysis: VideoAnalysis,
+    reference_pose: PoseFrame | None,
+    reference_x_offset: float,
+    target_analysis: VideoAnalysis,
+    target_pose: PoseFrame | None,
+) -> float:
+    if reference_pose is None or target_pose is None:
+        return 0.0
+    reference_x = transformed_shoulder_x(reference_analysis, reference_pose, x_offset=reference_x_offset)
+    target_base_x = transformed_shoulder_x(target_analysis, target_pose, x_offset=0.0)
+    return reference_x - target_base_x
+
+
 def height_snapshot_frame_indices(segment: RepSegment) -> list[int]:
     if not segment.pose_by_frame:
         return []
@@ -1028,8 +1086,7 @@ def height_snapshot_frame_indices(segment: RepSegment) -> list[int]:
     highest_y = min(shoulder_values)
     target_levels = (
         lowest_y,
-        lowest_y + (highest_y - lowest_y) / 3.0,
-        lowest_y + (highest_y - lowest_y) * 2.0 / 3.0,
+        lowest_y + (highest_y - lowest_y) / 2.0,
         highest_y,
     )
 
@@ -1062,6 +1119,8 @@ def write_angle_comparisons(
     background: np.ndarray,
     config: CompareConfig,
 ) -> None:
+    del stills1, stills2
+
     snapshot_indices1 = height_snapshot_frame_indices(segment1)
     snapshot_indices2 = height_snapshot_frame_indices(segment2)
     point_count = min(len(snapshot_indices1), len(snapshot_indices2))
@@ -1072,6 +1131,16 @@ def write_angle_comparisons(
     snapshot_indices2 = snapshot_indices2[:point_count]
 
     if point_count == 1:
+        pose1 = segment1.pose_by_frame.get(snapshot_indices1[0])
+        pose2 = segment2.pose_by_frame.get(snapshot_indices2[0])
+        x_offset1 = 0.0
+        x_offset2 = compute_x_alignment_offset(
+            reference_analysis=analysis1,
+            reference_pose=pose1,
+            reference_x_offset=x_offset1,
+            target_analysis=analysis2,
+            target_pose=pose2,
+        )
         frame1 = read_decorated_frame(
             analysis=analysis1,
             frame_index=snapshot_indices1[0],
@@ -1080,6 +1149,7 @@ def write_angle_comparisons(
             pose_by_frame=segment1.pose_by_frame,
             show_pose_overlay=segment1.show_pose_overlay,
             accent_color=ANALYSIS_COLORS["video1"],
+            x_offset=x_offset1,
         )
         frame2 = read_decorated_frame(
             analysis=analysis2,
@@ -1089,6 +1159,7 @@ def write_angle_comparisons(
             pose_by_frame=segment2.pose_by_frame,
             show_pose_overlay=segment2.show_pose_overlay,
             accent_color=ANALYSIS_COLORS["video2"],
+            x_offset=x_offset2,
         )
         if frame1 is not None:
             write_hold(writer, frame1, fps=config.output_fps, seconds=config.hold_seconds)
@@ -1098,16 +1169,21 @@ def write_angle_comparisons(
         return
 
     current_source = 1
+    current_analysis = analysis1
+    current_segment = segment1
+    current_boundary_list = snapshot_indices1
+    current_x_offset = 0.0
     current_last_frame = write_frame_interval(
         writer,
-        analysis=analysis1,
-        segment=segment1,
+        analysis=current_analysis,
+        segment=current_segment,
         start_frame=segment1.start_frame,
         end_frame=snapshot_indices1[1],
         canvas_size=canvas_size,
         background=background,
         accent_color=ANALYSIS_COLORS["video1"],
         output_fps=config.output_fps,
+        x_offset=current_x_offset,
     )
 
     for boundary_index in range(1, point_count):
@@ -1126,6 +1202,15 @@ def write_angle_comparisons(
             next_source = 1
             next_boundary_list = snapshot_indices1
 
+        current_pose = current_segment.pose_by_frame.get(current_boundary_list[boundary_index])
+        next_pose = next_segment.pose_by_frame.get(next_frame_index)
+        next_x_offset = compute_x_alignment_offset(
+            reference_analysis=current_analysis,
+            reference_pose=current_pose,
+            reference_x_offset=current_x_offset,
+            target_analysis=next_analysis,
+            target_pose=next_pose,
+        )
         transition_frame = read_decorated_frame(
             analysis=next_analysis,
             frame_index=next_frame_index,
@@ -1134,6 +1219,7 @@ def write_angle_comparisons(
             pose_by_frame=next_segment.pose_by_frame,
             show_pose_overlay=next_segment.show_pose_overlay,
             accent_color=next_accent,
+            x_offset=next_x_offset,
         )
         if current_last_frame is not None and transition_frame is not None:
             write_crossfade(
@@ -1162,10 +1248,15 @@ def write_angle_comparisons(
             background=background,
             accent_color=next_accent,
             output_fps=config.output_fps,
+            x_offset=next_x_offset,
         )
         if current_last_frame is None:
             current_last_frame = transition_frame
         current_source = next_source
+        current_analysis = next_analysis
+        current_segment = next_segment
+        current_boundary_list = next_boundary_list
+        current_x_offset = next_x_offset
 
 
 def build_capture_frames(segment: RepSegment) -> set[int]:
