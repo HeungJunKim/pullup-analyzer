@@ -37,9 +37,9 @@ LABEL_TEXT_COLOR = (242, 247, 255)
 LABEL_SUBTEXT_COLOR = (182, 194, 212)
 OUTPUT_BORDER_PADDING = 48
 SOURCE_MASK_FILL = 255
-SNAPSHOT_SAME_POINT_FADE_SECONDS = 1.7
+SNAPSHOT_SAME_POINT_FADE_SECONDS = 1.0
 SNAPSHOT_NEXT_POINT_FADE_SECONDS = 1.0
-VIDEO2_SCALE_BIAS = 1.05
+VIDEO2_SCALE_BIAS = 1.14
 
 
 @dataclass(frozen=True)
@@ -93,7 +93,7 @@ class RepSegment:
 
     @property
     def show_pose_overlay(self) -> bool:
-        return self.rep_number <= 2
+        return self.rep_number <= 3
 
 
 @dataclass
@@ -362,7 +362,7 @@ def analyze_video(model, input_path: Path, *, label: str, config: CompareConfig)
     pre_pull_max_frame_index: int | None = None
     pre_pull_max_pose: PoseFrame | None = None
     pre_pull_max_angle: float | None = None
-    required_reps = max(config.max_reps, 7)
+    pre_pull_frames: list[tuple[int, PoseFrame, float]] = []
     last_video_frame_index = -1
     pending_rep_end_frame = -1
 
@@ -414,6 +414,7 @@ def analyze_video(model, input_path: Path, *, label: str, config: CompareConfig)
 
                 if current_state == STATE_DEADHANG:
                     if previous_state != STATE_DEADHANG:
+                        pre_pull_frames = []
                         pre_pull_max_frame_index = last_video_frame_index
                         pre_pull_max_pose = pose
                         pre_pull_max_angle = elbow_angle
@@ -421,16 +422,21 @@ def analyze_video(model, input_path: Path, *, label: str, config: CompareConfig)
                         pre_pull_max_frame_index = last_video_frame_index
                         pre_pull_max_pose = pose
                         pre_pull_max_angle = elbow_angle
+                    pre_pull_frames.append((last_video_frame_index, pose, elbow_angle))
+                elif current_rep is None and current_state != STATE_PULL:
+                    pre_pull_frames = []
 
                 if previous_state != STATE_PULL and current_state == STATE_PULL and current_rep is None:
                     if pending_rep is not None:
                         segments.append(pending_rep.to_segment(max(pending_rep.start_frame, pending_rep_end_frame)))
-                        if len(segments) >= required_reps:
-                            progress.update(1)
-                            break
                         pending_rep = None
                     current_rep = RunningRep.create(previous_count + 1, last_video_frame_index, config.target_angles)
-                    if pre_pull_max_frame_index is not None and pre_pull_max_pose is not None and pre_pull_max_angle is not None:
+                    if pre_pull_frames:
+                        for frame_index, frame_pose, frame_angle in pre_pull_frames:
+                            current_rep.pose_by_frame[frame_index] = frame_pose
+                            current_rep.consider_shoulder_height(frame_index, float(frame_pose.shoulder_y))
+                            current_rep.consider_extrema(frame_index, frame_angle)
+                    elif pre_pull_max_frame_index is not None and pre_pull_max_pose is not None and pre_pull_max_angle is not None:
                         current_rep.pose_by_frame[pre_pull_max_frame_index] = pre_pull_max_pose
                         current_rep.consider_shoulder_height(pre_pull_max_frame_index, float(pre_pull_max_pose.shoulder_y))
                         current_rep.consider_extrema(pre_pull_max_frame_index, pre_pull_max_angle)
@@ -473,7 +479,7 @@ def analyze_video(model, input_path: Path, *, label: str, config: CompareConfig)
         label=label,
         input_path=input_path,
         metadata=metadata,
-        segments=segments[: required_reps],
+        segments=segments,
         torso_lengths=torso_lengths,
         hip_widths=hip_widths,
         shoulder_centers=shoulder_centers,
@@ -846,14 +852,18 @@ def write_segment(
     output_fps: float,
     capture_frames: set[int] | None = None,
     x_offset: float = 0.0,
+    start_frame_override: int | None = None,
+    end_frame_override: int | None = None,
 ) -> dict[int, np.ndarray]:
     captured_frames: dict[int, np.ndarray] = {}
     sampling_state = {"carry": 0.0}
     wrote_any_frame = False
     last_rendered_frame: np.ndarray | None = None
     placement = analysis.placement or VideoPlacement(1.0, 0.0, 0.0)
+    start_frame = segment.start_frame if start_frame_override is None else min(segment.end_frame, start_frame_override)
+    end_frame = segment.end_frame if end_frame_override is None else min(segment.end_frame, max(start_frame, end_frame_override))
 
-    for frame_index, frame in reader.iter_range(segment.start_frame, segment.end_frame):
+    for frame_index, frame in reader.iter_range(start_frame, end_frame):
         pose = segment.pose_by_frame.get(frame_index)
         aligned = render_aligned_frame(
             frame,
@@ -1044,6 +1054,10 @@ def shift_frame_horizontally(frame: np.ndarray, delta_x: float) -> np.ndarray:
     )
 
 
+def pose_elbow_angle(pose: PoseFrame) -> float:
+    return min(float(pose.left_angle), float(pose.right_angle))
+
+
 def first_pose_in_segment(segment: RepSegment) -> PoseFrame | None:
     if not segment.pose_by_frame:
         return None
@@ -1130,44 +1144,6 @@ def write_angle_comparisons(
     snapshot_indices1 = snapshot_indices1[:point_count]
     snapshot_indices2 = snapshot_indices2[:point_count]
 
-    if point_count == 1:
-        pose1 = segment1.pose_by_frame.get(snapshot_indices1[0])
-        pose2 = segment2.pose_by_frame.get(snapshot_indices2[0])
-        x_offset1 = 0.0
-        x_offset2 = compute_x_alignment_offset(
-            reference_analysis=analysis1,
-            reference_pose=pose1,
-            reference_x_offset=x_offset1,
-            target_analysis=analysis2,
-            target_pose=pose2,
-        )
-        frame1 = read_decorated_frame(
-            analysis=analysis1,
-            frame_index=snapshot_indices1[0],
-            canvas_size=canvas_size,
-            background=background,
-            pose_by_frame=segment1.pose_by_frame,
-            show_pose_overlay=segment1.show_pose_overlay,
-            accent_color=ANALYSIS_COLORS["video1"],
-            x_offset=x_offset1,
-        )
-        frame2 = read_decorated_frame(
-            analysis=analysis2,
-            frame_index=snapshot_indices2[0],
-            canvas_size=canvas_size,
-            background=background,
-            pose_by_frame=segment2.pose_by_frame,
-            show_pose_overlay=segment2.show_pose_overlay,
-            accent_color=ANALYSIS_COLORS["video2"],
-            x_offset=x_offset2,
-        )
-        if frame1 is not None:
-            write_hold(writer, frame1, fps=config.output_fps, seconds=config.hold_seconds)
-        if frame1 is not None and frame2 is not None:
-            write_crossfade(writer, frame1, frame2, fps=config.output_fps, seconds=SNAPSHOT_SAME_POINT_FADE_SECONDS)
-            write_hold(writer, frame2, fps=config.output_fps, seconds=config.hold_seconds)
-        return
-
     current_source = 1
     current_analysis = analysis1
     current_segment = segment1
@@ -1177,8 +1153,8 @@ def write_angle_comparisons(
         writer,
         analysis=current_analysis,
         segment=current_segment,
-        start_frame=segment1.start_frame,
-        end_frame=snapshot_indices1[1],
+        start_frame=segment_pose_start_frame(segment1),
+        end_frame=snapshot_indices1[0],
         canvas_size=canvas_size,
         background=background,
         accent_color=ANALYSIS_COLORS["video1"],
@@ -1186,7 +1162,7 @@ def write_angle_comparisons(
         x_offset=current_x_offset,
     )
 
-    for boundary_index in range(1, point_count):
+    for boundary_index in range(point_count):
         if current_source == 1:
             next_analysis = analysis2
             next_segment = segment2
@@ -1263,14 +1239,47 @@ def build_capture_frames(segment: RepSegment) -> set[int]:
     return set(height_snapshot_frame_indices(segment))
 
 
+def segment_pose_start_frame(segment: RepSegment) -> int:
+    if segment.pose_by_frame:
+        return min(segment.pose_by_frame)
+    return segment.start_frame
+
+
+def segment_transition_end_frame(segment: RepSegment, target_pose: PoseFrame | None) -> int:
+    if target_pose is None or not segment.pose_by_frame:
+        return segment.end_frame
+
+    search_start = segment.peak_shoulder_frame_index
+    if search_start is None:
+        search_start = segment.start_frame
+
+    candidates = [
+        (frame_index, pose)
+        for frame_index, pose in sorted(segment.pose_by_frame.items())
+        if frame_index >= search_start
+    ]
+    if not candidates:
+        candidates = sorted(segment.pose_by_frame.items())
+
+    target_angle = pose_elbow_angle(target_pose)
+    best_frame = segment.end_frame
+    best_key = (math.inf, math.inf)
+    for frame_index, pose in candidates:
+        key = (abs(pose_elbow_angle(pose) - target_angle), frame_index)
+        if key < best_key:
+            best_key = key
+            best_frame = frame_index
+    return best_frame
+
+
 def render_comparison_video(
     analysis1: VideoAnalysis,
     analysis2: VideoAnalysis,
     *,
     config: CompareConfig,
 ) -> Path:
-    if analysis1.available_reps < 4 or analysis2.available_reps < 6:
-        raise RuntimeError("Need at least 4 reps in video1 and 6 reps in video2.")
+    if analysis1.available_reps < 5 or analysis2.available_reps < 8:
+        raise RuntimeError("Need at least 5 reps in video1 and 8 reps in video2.")
     output_width, output_height = compute_output_layout([analysis1, analysis2])
     canvas_size = (output_width, output_height)
     background = build_background(canvas_size)
@@ -1279,130 +1288,66 @@ def render_comparison_video(
     writer = open_video_writer(config.output_path, fps=config.output_fps, frame_size=canvas_size)
     reader1 = SequentialFrameReader(analysis1.input_path, analysis1.metadata)
     reader2 = SequentialFrameReader(analysis2.input_path, analysis2.metadata)
-    render_steps = 7
+    single_rep_count = 2
+    overlay_rep_count = 2
+    overlay_tail_count = 2
+    tail_start_index = 5
+    tail_video2_count = min(3, max(0, analysis2.available_reps - tail_start_index))
+    render_steps = single_rep_count * 2 + overlay_rep_count + overlay_tail_count + tail_video2_count
     progress = tqdm(total=render_steps, desc="Render compare", unit="step", dynamic_ncols=True)
 
     try:
-        rep1_segment1 = analysis1.segments[0]
-        rep1_capture_frames1 = build_capture_frames(rep1_segment1)
-        rep1_stills1 = write_segment(
-            writer,
-            reader1,
-            analysis=analysis1,
-            segment=rep1_segment1,
-            canvas_size=canvas_size,
-            background=background,
-            accent_color=ANALYSIS_COLORS["video1"],
-            output_fps=config.output_fps,
-            capture_frames=rep1_capture_frames1,
-        )
-        if len(rep1_stills1) < len(rep1_capture_frames1):
-            missing1 = rep1_capture_frames1 - set(rep1_stills1)
-            rep1_stills1.update(
-                read_selected_frames(
-                    analysis1.input_path,
-                    analysis1.metadata,
-                    missing1,
-                    analysis=analysis1,
-                    canvas_size=canvas_size,
-                    background=background,
-                    pose_by_frame=rep1_segment1.pose_by_frame,
-                    show_pose_overlay=rep1_segment1.show_pose_overlay,
-                )
+        for rep_index in range(single_rep_count):
+            segment1 = analysis1.segments[rep_index]
+            segment2 = analysis2.segments[rep_index]
+            start_frame_override1 = segment_pose_start_frame(segment1)
+            start_frame_override2 = segment_pose_start_frame(segment2)
+            end_frame_override1 = segment_transition_end_frame(segment1, first_pose_in_segment(segment2))
+            next_video1_pose = first_pose_in_segment(analysis1.segments[rep_index + 1]) if rep_index + 1 < single_rep_count else None
+            end_frame_override2 = segment_transition_end_frame(segment2, next_video1_pose)
+            write_segment(
+                writer,
+                reader1,
+                analysis=analysis1,
+                segment=segment1,
+                canvas_size=canvas_size,
+                background=background,
+                accent_color=ANALYSIS_COLORS["video1"],
+                output_fps=config.output_fps,
+                start_frame_override=start_frame_override1,
+                end_frame_override=end_frame_override1,
             )
-        progress.update(1)
+            progress.update(1)
 
-        rep1_segment2 = analysis2.segments[0]
-        rep1_capture_frames2 = build_capture_frames(rep1_segment2)
-        rep1_stills2 = write_segment(
-            writer,
-            reader2,
-            analysis=analysis2,
-            segment=rep1_segment2,
-            canvas_size=canvas_size,
-            background=background,
-            accent_color=ANALYSIS_COLORS["video2"],
-            output_fps=config.output_fps,
-            capture_frames=rep1_capture_frames2,
-        )
-        if len(rep1_stills2) < len(rep1_capture_frames2):
-            missing2 = rep1_capture_frames2 - set(rep1_stills2)
-            rep1_stills2.update(
-                read_selected_frames(
-                    analysis2.input_path,
-                    analysis2.metadata,
-                    missing2,
-                    analysis=analysis2,
-                    canvas_size=canvas_size,
-                    background=background,
-                    pose_by_frame=rep1_segment2.pose_by_frame,
-                    show_pose_overlay=rep1_segment2.show_pose_overlay,
-                )
+            write_segment(
+                writer,
+                reader2,
+                analysis=analysis2,
+                segment=segment2,
+                canvas_size=canvas_size,
+                background=background,
+                accent_color=ANALYSIS_COLORS["video2"],
+                output_fps=config.output_fps,
+                start_frame_override=start_frame_override2,
+                end_frame_override=end_frame_override2,
             )
-        progress.update(1)
+            progress.update(1)
 
-        write_angle_comparisons(
-            writer,
-            segment1=rep1_segment1,
-            segment2=rep1_segment2,
-            stills1=rep1_stills1,
-            stills2=rep1_stills2,
-            analysis1=analysis1,
-            analysis2=analysis2,
-            canvas_size=canvas_size,
-            background=background,
-            config=config,
-        )
-        progress.update(1)
+        for rep_index in range(overlay_rep_count):
+            write_angle_comparisons(
+                writer,
+                segment1=analysis1.segments[rep_index],
+                segment2=analysis2.segments[rep_index],
+                stills1={},
+                stills2={},
+                analysis1=analysis1,
+                analysis2=analysis2,
+                canvas_size=canvas_size,
+                background=background,
+                config=config,
+            )
+            progress.update(1)
 
-        rep2_segment1 = analysis1.segments[1]
-        rep2_segment2 = analysis2.segments[1]
-        rep2_stills1 = read_selected_frames(
-            analysis1.input_path,
-            analysis1.metadata,
-            build_capture_frames(rep2_segment1),
-            analysis=analysis1,
-            canvas_size=canvas_size,
-            background=background,
-            pose_by_frame=rep2_segment1.pose_by_frame,
-            show_pose_overlay=rep2_segment1.show_pose_overlay,
-        )
-        rep2_stills2 = read_selected_frames(
-            analysis2.input_path,
-            analysis2.metadata,
-            build_capture_frames(rep2_segment2),
-            analysis=analysis2,
-            canvas_size=canvas_size,
-            background=background,
-            pose_by_frame=rep2_segment2.pose_by_frame,
-            show_pose_overlay=rep2_segment2.show_pose_overlay,
-        )
-        write_angle_comparisons(
-            writer,
-            segment1=rep2_segment1,
-            segment2=rep2_segment2,
-            stills1=rep2_stills1,
-            stills2=rep2_stills2,
-            analysis1=analysis1,
-            analysis2=analysis2,
-            canvas_size=canvas_size,
-            background=background,
-            config=config,
-        )
-        progress.update(1)
-
-        render_dual_overlay_segment(
-            writer,
-            analysis1=analysis1,
-            segment1=analysis1.segments[2],
-            analysis2=analysis2,
-            segment2=analysis2.segments[2],
-            canvas_size=canvas_size,
-            background=background,
-            output_fps=config.output_fps,
-            start_alpha=0.0,
-            end_alpha=0.5,
-        )
         render_dual_overlay_segment(
             writer,
             analysis1=analysis1,
@@ -1412,34 +1357,37 @@ def render_comparison_video(
             canvas_size=canvas_size,
             background=background,
             output_fps=config.output_fps,
+            start_alpha=0.0,
+            end_alpha=0.5,
+        )
+        progress.update(1)
+
+        render_dual_overlay_segment(
+            writer,
+            analysis1=analysis1,
+            segment1=analysis1.segments[4],
+            analysis2=analysis2,
+            segment2=analysis2.segments[4],
+            canvas_size=canvas_size,
+            background=background,
+            output_fps=config.output_fps,
             start_alpha=0.5,
             end_alpha=1.0,
         )
         progress.update(1)
 
-        write_segment(
-            writer,
-            reader2,
-            analysis=analysis2,
-            segment=analysis2.segments[4],
-            canvas_size=canvas_size,
-            background=background,
-            accent_color=ANALYSIS_COLORS["video2"],
-            output_fps=config.output_fps,
-        )
-        progress.update(1)
-
-        write_segment(
-            writer,
-            reader2,
-            analysis=analysis2,
-            segment=analysis2.segments[5],
-            canvas_size=canvas_size,
-            background=background,
-            accent_color=ANALYSIS_COLORS["video2"],
-            output_fps=config.output_fps,
-        )
-        progress.update(1)
+        for segment in analysis2.segments[tail_start_index: tail_start_index + tail_video2_count]:
+            write_segment(
+                writer,
+                reader2,
+                analysis=analysis2,
+                segment=segment,
+                canvas_size=canvas_size,
+                background=background,
+                accent_color=ANALYSIS_COLORS["video2"],
+                output_fps=config.output_fps,
+            )
+            progress.update(1)
     finally:
         progress.close()
         reader1.close()
